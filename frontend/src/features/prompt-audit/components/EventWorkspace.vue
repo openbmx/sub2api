@@ -23,6 +23,7 @@
           <option value="pass">{{ t('admin.promptAudit.decisions.pass') }}</option>
           <option value="flag">{{ t('admin.promptAudit.decisions.flag') }}</option>
           <option value="critical">{{ t('admin.promptAudit.decisions.critical') }}</option>
+          <option value="unavailable">{{ t('admin.promptAudit.decisions.unavailable') }}</option>
         </select>
       </label>
       <label class="text-xs text-gray-600 dark:text-dark-200">
@@ -88,7 +89,8 @@
             </td>
             <td class="px-3 py-3">
               <span class="rounded-full px-2 py-0.5 text-xs font-medium" :class="decisionClass(event.decision)">{{ formatDecisionRisk(event.decision, event.risk_level) }}</span>
-              <p class="mt-2 max-w-48 truncate text-xs text-gray-500" :title="formatCategories(event.categories)">{{ formatCategories(event.categories) }}</p>
+              <p v-if="event.error_code" class="mt-2 max-w-48 truncate text-xs text-slate-600 dark:text-slate-300" :title="event.error_code">{{ event.error_code }}</p>
+              <p v-else class="mt-2 max-w-48 truncate text-xs text-gray-500" :title="formatCategories(event.categories)">{{ formatCategories(event.categories) }}</p>
             </td>
             <td class="max-w-xs px-3 py-3"><p class="line-clamp-2 break-words text-gray-600 dark:text-dark-300">{{ event.snapshot.redacted_preview || '—' }}</p></td>
             <td class="whitespace-nowrap px-3 py-3 text-right">
@@ -186,9 +188,12 @@ function formatDate(value: string): string {
 function decisionClass(decision: string): string {
   if (decision === 'critical') return 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300'
   if (decision === 'flag') return 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
+  // An unjudged request is neither safe nor a finding; slate keeps it from
+  // reading as "passed" in a list scan.
+  if (decision === 'unavailable') return 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-200'
   return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
 }
-const DECISIONS = new Set(['pass', 'flag', 'critical'])
+const DECISIONS = new Set(['pass', 'flag', 'critical', 'unavailable'])
 const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical'])
 
 function translateDecision(decision: string): string {

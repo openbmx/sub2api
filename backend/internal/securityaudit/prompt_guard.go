@@ -51,6 +51,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
 		}
 		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
+		g.recordFailure(ctx, cfg, snapshot, "no_enabled_endpoint", g.clock.Now().Sub(start))
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
 	}
 	select {
@@ -62,6 +63,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
 		}
 		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
+		g.recordFailure(ctx, cfg, snapshot, "bulkhead_full", g.clock.Now().Sub(start))
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
 	}
 	timeout := time.Duration(endpoints[0].TimeoutMS) * time.Millisecond
@@ -107,6 +109,12 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 				}
 			}
 			logGuardFailure(snapshot, cfg, kind, code, "", g.clock.Now().Sub(start))
+			var timeoutErr *GuardError
+			if errors.As(err, &timeoutErr) && timeoutErr.Timeout {
+				// Distinguish the timeout case issue #3678 calls out explicitly.
+				code = "timeout"
+			}
+			g.recordFailure(ctx, cfg, snapshot, code, g.clock.Now().Sub(start))
 			return nil, err
 		}
 		result.ChunkTotal = len(chunks)
@@ -127,6 +135,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 			g.metrics.Observe(DecisionInvalid, g.clock.Now().Sub(start))
 		}
 		logGuardFailure(snapshot, cfg, DecisionInvalid, ErrorCodeInvalidResponse, "", g.clock.Now().Sub(start))
+		g.recordFailure(ctx, cfg, snapshot, ErrorCodeInvalidResponse, g.clock.Now().Sub(start))
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
 	}
 	aggregated.ChunkTotal = len(chunks)
@@ -183,8 +192,38 @@ func logGuardFailure(snapshot PromptSnapshot, cfg ActiveConfig, kind DecisionKin
 	fields["config_version"] = cfg.ConfigVersion
 	LogWarn(EventGuardFailed, mergeLogFields(fields, map[string]any{
 		"decision": kind, "guard_endpoint_id": guardEndpointID, "latency_ms": latency.Milliseconds(),
-		"status": "failed", "error_code": code, "upstream_dispatched": false, "billing_preconsumed": false,
+		"status": "failed", "error_code": code, "fail_open": cfg.BlockingFailOpen,
+		"upstream_dispatched": cfg.BlockingFailOpen, "billing_preconsumed": false,
 	}))
+}
+
+// auditFailureRecordTimeout bounds the detached write below so a slow database
+// cannot hold a request open after the audit already failed.
+const auditFailureRecordTimeout = 3 * time.Second
+
+// recordFailure persists an audit failure as an event so the admin view shows
+// requests the guard could not judge, and whether each was passed through or
+// rejected. A log line alone left rejected traffic invisible in the UI.
+func (g *GuardEvaluator) recordFailure(ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot, code string, latency time.Duration) {
+	if g == nil || g.repo == nil {
+		return
+	}
+	// Detached from the caller on purpose: a hung guard often coincides with the
+	// client giving up, and a cancelled request context would drop exactly the
+	// record that explains why the request failed.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditFailureRecordTimeout)
+	defer cancel()
+	result := UnavailableResult(code, cfg.BlockingFailOpen, latency)
+	// Failure events are always stored: StorePassEvents governs benign traffic,
+	// and an unjudged request is never benign.
+	if _, err := g.repo.RecordBlocking(ctx, snapshot.Redacted(), cfg.ConfigVersion, result, true); err != nil {
+		if g.metrics != nil {
+			g.metrics.IncRecordFailed()
+		}
+		LogWarn(EventResultRecordFailed, mergeLogFields(snapshotLogFields(snapshot), map[string]any{
+			"decision": DecisionUnavailable, "error_code": "result_record_failed", "status": "failed",
+		}))
+	}
 }
 
 func (g *GuardEvaluator) scanChunk(ctx context.Context, cfg ActiveConfig, endpoints []ActiveEndpoint, chunk string) (*NormalizedResult, error) {

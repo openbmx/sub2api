@@ -19,9 +19,11 @@ vi.mock('vue-i18n', async () => {
 })
 
 const baseConfig = (): PromptAuditConfig => ({
-  enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
+  enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, blocking_fail_open: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
   worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: true, group_ids: [],
-  endpoints: [{ id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000', model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true, has_token: true, token_status: 'configured' }],
+  endpoints: [{ id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000', model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true, has_token: true, token_status: 'configured', response_format: 'qwen3guard' }],
+  custom_prompt: 'prompt', default_custom_prompt: 'prompt', category_aware_custom_prompt: 'category prompt',
+  block_threshold: 0.7, flag_threshold: 0.4,
   config_version: 7, updated_at: '2026-07-16T00:00:00Z', updated_by: 1, change_summary: '{}',
 })
 const runtime = (): PromptAuditRuntime => ({
@@ -178,10 +180,31 @@ describe('PromptAuditView', () => {
     await flushPromises()
     await wrapper.get('[data-test="tab-config"]').trigger('click')
     const switches = wrapper.findAll('[role="switch"]')
-    expect(switches).toHaveLength(4)
+    expect(switches).toHaveLength(5)
     expect(switches.every((item) => Boolean(item.attributes('aria-label')))).toBe(true)
     expect(wrapper.html()).toContain('fixed inset-x-0 bottom-0')
     expect(wrapper.html()).toContain('flex-wrap')
+  })
+
+  it('gates the fail-open toggle on blocking mode and states the active posture', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+
+    // Fail-open only means anything for synchronous blocking, so it stays
+    // disabled — and the posture hint stays hidden — until blocking is on.
+    const failOpen = wrapper.get('[data-test="blocking-fail-open-toggle"]')
+    expect(failOpen.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="fail-posture-hint"]').exists()).toBe(false)
+
+    // Turning blocking on goes through the risk confirmation dialog.
+    await wrapper.get('[data-test="blocking-toggle"]').trigger('click')
+    await wrapper.get('[data-test="confirm-action"]').trigger('click')
+    expect(wrapper.get('[data-test="blocking-fail-open-toggle"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-test="fail-posture-hint"]').text()).toContain('admin.promptAudit.saveBar.failClosedHint')
+
+    await wrapper.get('[data-test="blocking-fail-open-toggle"]').trigger('click')
+    expect(wrapper.get('[data-test="fail-posture-hint"]').text()).toContain('admin.promptAudit.saveBar.failOpenHint')
   })
 
   it('executes single, selected-batch, and preview-confirmed filter deletion flows', async () => {

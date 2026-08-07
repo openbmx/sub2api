@@ -41,6 +41,11 @@ type ConfigManager struct {
 	// independently of whether endpoint credentials or the full config could be
 	// activated. A config version alone cannot distinguish async from blocking.
 	expectedBlocking atomic.Bool
+	// expectedFailOpen mirrors expectedBlocking for the fail-open choice, so a
+	// degraded reload still honors it. Without this, a config that cannot be
+	// activated would reject every request even though the administrator asked
+	// for pass-through on audit failure.
+	expectedFailOpen atomic.Bool
 	// configUntrusted is set when a load/reload fails before a trustworthy
 	// snapshot is installed. Combined with expectedBlocking, EffectiveMode
 	// fails closed so a persisted blocking policy cannot be silently skipped
@@ -125,6 +130,7 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 	}
 	m.expected.Store(storage.ConfigVersion)
 	m.expectedBlocking.Store(values[SettingKeyRiskControl] == "true" && storage.Enabled && storage.BlockingEnabled)
+	m.expectedFailOpen.Store(storage.BlockingFailOpen)
 	active, err := ActiveFromStorage(storage, values[SettingKeyRiskControl] == "true", m.encryptor)
 	if err != nil {
 		m.recordLoadError(err)
@@ -203,6 +209,18 @@ func (m *ConfigManager) BlockingActivationDegraded() bool {
 	// A still-active weaker snapshot after a failed blocking activation must not
 	// keep serving allow decisions under the old off/async mode.
 	return active.EffectiveMode() != ModeBlocking
+}
+
+// BlockingFailOpen answers from the active snapshot, falling back to the last
+// decodable storage intent so a degraded reload still honors the choice.
+func (m *ConfigManager) BlockingFailOpen() bool {
+	if m == nil {
+		return false
+	}
+	if active, ok := m.Active(); ok && !m.configUntrusted.Load() {
+		return active.BlockingFailOpen
+	}
+	return m.expectedFailOpen.Load()
 }
 
 func (m *ConfigManager) EffectiveMode() Mode {
@@ -306,6 +324,7 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	}
 	m.expected.Store(next.ConfigVersion)
 	m.expectedBlocking.Store(active.RiskControlEnabled && next.Enabled && next.BlockingEnabled)
+	m.expectedFailOpen.Store(next.BlockingFailOpen)
 	previous := m.snapshot.Load()
 	m.snapshot.Store(&activeConfigSnapshot{storage: cloneStorageConfig(next), active: cloneActiveConfig(active), loadedAt: m.clock.Now()})
 	// A successful admin save installs a trustworthy snapshot; clear any prior
@@ -335,12 +354,26 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		currentByID[endpoint.ID] = endpoint
 	}
 	next := storageConfig{
-		Enabled: req.Enabled, BlockingEnabled: req.BlockingEnabled, BlockingLatestTurnOnly: req.BlockingLatestTurnOnly, StorePassEvents: req.StorePassEvents,
+		Enabled: req.Enabled, BlockingEnabled: req.BlockingEnabled, BlockingLatestTurnOnly: req.BlockingLatestTurnOnly,
+		BlockingFailOpen: req.BlockingFailOpen, StorePassEvents: req.StorePassEvents,
 		Strategy: strings.TrimSpace(req.Strategy), WorkerCount: req.WorkerCount,
 		QueueCapacity: req.QueueCapacity, Scanners: append([]string(nil), req.Scanners...),
 		AllGroups: req.AllGroups, GroupIDs: append([]int64(nil), req.GroupIDs...),
+		CustomPrompt: strings.TrimSpace(req.CustomPrompt), BlockThreshold: req.BlockThreshold, FlagThreshold: req.FlagThreshold,
 		ConfigVersion: current.ConfigVersion, UpdatedBy: actorID,
 		Endpoints: make([]StorageEndpoint, 0, len(req.Endpoints)),
+	}
+	// An admin client that predates custom prompts omits these fields entirely.
+	// Carrying the stored values forward stops such a client from silently
+	// resetting the policy to defaults on an unrelated save.
+	if next.CustomPrompt == "" {
+		next.CustomPrompt = current.CustomPrompt
+	}
+	if next.BlockThreshold == 0 {
+		next.BlockThreshold = current.BlockThreshold
+	}
+	if next.FlagThreshold == 0 {
+		next.FlagThreshold = current.FlagThreshold
 	}
 	for _, endpoint := range req.Endpoints {
 		baseURL, err := NormalizeBaseURL(endpoint.BaseURL)
@@ -351,8 +384,14 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 			ID: strings.TrimSpace(endpoint.ID), Name: strings.TrimSpace(endpoint.Name),
 			Protocol: strings.TrimSpace(endpoint.Protocol), BaseURL: baseURL, Model: strings.TrimSpace(endpoint.Model),
 			TimeoutMS: endpoint.TimeoutMS, InputLimit: endpoint.InputLimit, Enabled: endpoint.Enabled,
+			ResponseFormat: strings.TrimSpace(endpoint.ResponseFormat),
 		}
 		old, hadOld := currentByID[stored.ID]
+		// Same reasoning as the policy fields above: an omitted response_format
+		// must not silently downgrade an existing custom_json node.
+		if stored.ResponseFormat == "" && hadOld {
+			stored.ResponseFormat = old.ResponseFormat
+		}
 		switch {
 		case endpoint.ClearToken:
 			stored.TokenCiphertext = ""
@@ -417,9 +456,10 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 		return
 	}
 	var intent struct {
-		Enabled         bool  `json:"enabled"`
-		BlockingEnabled bool  `json:"blocking_enabled"`
-		ConfigVersion   int64 `json:"config_version"`
+		Enabled          bool  `json:"enabled"`
+		BlockingEnabled  bool  `json:"blocking_enabled"`
+		BlockingFailOpen bool  `json:"blocking_fail_open"`
+		ConfigVersion    int64 `json:"config_version"`
 	}
 	if err := json.Unmarshal([]byte(raw), &intent); err != nil {
 		return
@@ -429,6 +469,7 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 	}
 	m.expected.Store(intent.ConfigVersion)
 	m.expectedBlocking.Store(riskControlEnabled && intent.Enabled && intent.BlockingEnabled)
+	m.expectedFailOpen.Store(intent.BlockingFailOpen)
 }
 
 func (m *ConfigManager) refreshLoop(ctx context.Context) {

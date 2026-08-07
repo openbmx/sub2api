@@ -50,7 +50,14 @@
                 @probe="runProbe"
               />
               <div v-if="loadErrors.groups" role="alert" class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ loadErrors.groups }}</div>
-              <PolicyPanel :draft="draft" :groups="groups" @update:draft="replaceDraft" />
+              <PolicyPanel
+                :draft="draft"
+                :groups="groups"
+                :default-custom-prompt="defaultCustomPrompt"
+                :category-aware-custom-prompt="categoryAwareCustomPrompt"
+                @update:draft="replaceDraft"
+                @preview="openPreview"
+              />
             </template>
           </div>
 
@@ -92,11 +99,22 @@
 
     <div v-if="draft && activeTab === 'config'" class="fixed inset-x-0 bottom-0 z-30 border-t border-gray-200 bg-white/95 px-4 py-3 shadow-[0_-12px_35px_rgba(15,23,42,0.08)] backdrop-blur dark:border-dark-700/80 dark:bg-dark-900/95 dark:shadow-[0_-12px_35px_rgba(0,0,0,0.35)] lg:left-64">
       <div class="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3">
+        <div class="min-w-0">
         <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
           <SaveToggle :label="t('admin.promptAudit.saveBar.enabled')" :model-value="draft.enabled" data-test="enabled-toggle" @update:model-value="setEnabled" />
           <SaveToggle :label="t('admin.promptAudit.saveBar.blocking')" :model-value="draft.blocking_enabled" :disabled="!draft.enabled" data-test="blocking-toggle" @update:model-value="setBlocking" />
           <SaveToggle :label="t('admin.promptAudit.saveBar.blockingLatestTurnOnly')" :model-value="draft.blocking_latest_turn_only" :disabled="!draft.enabled || !draft.blocking_enabled" data-test="blocking-latest-turn-only-toggle" @update:model-value="replaceDraft({ ...draft!, blocking_latest_turn_only: $event })" />
+          <SaveToggle :label="t('admin.promptAudit.saveBar.blockingFailOpen')" :model-value="draft.blocking_fail_open" :disabled="!draft.enabled || !draft.blocking_enabled" data-test="blocking-fail-open-toggle" @update:model-value="replaceDraft({ ...draft!, blocking_fail_open: $event })" />
           <SaveToggle :label="t('admin.promptAudit.saveBar.storePass')" :model-value="draft.store_pass_events" data-test="store-pass-toggle" @update:model-value="replaceDraft({ ...draft!, store_pass_events: $event })" />
+        </div>
+        <p
+          v-if="draft.enabled && draft.blocking_enabled"
+          class="mt-1.5 text-xs"
+          :class="draft.blocking_fail_open ? 'text-amber-700 dark:text-amber-300' : 'text-gray-500 dark:text-dark-400'"
+          data-test="fail-posture-hint"
+        >
+          {{ draft.blocking_fail_open ? t('admin.promptAudit.saveBar.failOpenHint') : t('admin.promptAudit.saveBar.failClosedHint') }}
+        </p>
         </div>
         <div class="flex items-center gap-3">
           <span class="text-sm" :class="dirty ? 'text-amber-700 dark:text-amber-300' : 'text-gray-500 dark:text-dark-400'">
@@ -128,6 +146,17 @@
       @confirm="confirmIDDelete"
       @cancel="clearDeleteRequest"
     />
+    <PromptPreviewDialog
+      :show="showPreview"
+      :endpoints="draft?.endpoints ?? []"
+      :running="loading.preview"
+      :result="previewResult"
+      :draft-prompt="draft?.custom_prompt ?? ''"
+      :block-threshold="draft?.block_threshold ?? 0"
+      :flag-threshold="draft?.flag_threshold ?? 0"
+      @close="showPreview = false"
+      @run="runPreview"
+    />
     <FilterDeleteDialog
       :show="showFilterDelete"
       :initial-filters="filters"
@@ -156,6 +185,7 @@ import PolicyPanel from './components/PolicyPanel.vue'
 import EventWorkspace from './components/EventWorkspace.vue'
 import EventDetailDialog from './components/EventDetailDialog.vue'
 import FilterDeleteDialog from './components/FilterDeleteDialog.vue'
+import PromptPreviewDialog from './components/PromptPreviewDialog.vue'
 import promptAuditAPI from './api'
 import type {
   PromptAuditDraft,
@@ -167,6 +197,8 @@ import type {
   PromptEventFilters,
   PromptEventPage,
   PromptLoadErrors,
+  PromptPreviewRequest,
+  PromptPreviewResult,
   PromptProbeResult,
 } from './types'
 import { buildUpdateRequest, cloneData, configToDraft, draftFingerprint, emptyEventFilters } from './viewModel'
@@ -195,8 +227,13 @@ const showFilterDelete = ref(false)
 const deletePreview = ref<PromptDeletePreview | null>(null)
 const deletePreviewFilters = ref<PromptEventFilters | null>(null)
 const showBlockingConfirmation = ref(false)
+const showPreview = ref(false)
+const previewResult = ref<PromptPreviewResult | null>(null)
+// Supplied by the server so the presets cannot drift from the Go templates.
+const defaultCustomPrompt = ref('')
+const categoryAwareCustomPrompt = ref('')
 const deleteRequest = reactive<{ mode: '' | 'single' | 'batch'; ids: number[] }>({ mode: '', ids: [] })
-const loading = reactive({ config: false, runtime: false, groups: false, events: false, saving: false, detail: false, deleting: false, previewing: false })
+const loading = reactive({ config: false, runtime: false, groups: false, events: false, saving: false, detail: false, deleting: false, previewing: false, preview: false })
 const loadErrors = reactive<PromptLoadErrors>({ config: '', runtime: '', groups: '', events: '' })
 const dirty = computed(() => draftFingerprint(draft.value) !== draftFingerprint(serverConfig.value))
 
@@ -250,6 +287,8 @@ async function loadConfig() {
   loadErrors.config = ''
   try {
     const config = await promptAuditAPI.getConfig()
+    defaultCustomPrompt.value = config.default_custom_prompt ?? ''
+    categoryAwareCustomPrompt.value = config.category_aware_custom_prompt ?? ''
     serverConfig.value = configToDraft(config)
     draft.value = configToDraft(config)
   } catch (error) {
@@ -338,6 +377,24 @@ async function runProbe(endpoint: PromptAuditEndpointDraft) {
     appStore.showError(errorMessage(error, 'admin.promptAudit.errors.probe'))
   } finally {
     probingIds.value = probingIds.value.filter((id) => id !== endpoint.id)
+  }
+}
+
+function openPreview() {
+  previewResult.value = null
+  showPreview.value = true
+}
+
+async function runPreview(payload: PromptPreviewRequest) {
+  if (loading.preview) return
+  loading.preview = true
+  try {
+    previewResult.value = await promptAuditAPI.previewAudit(payload)
+  } catch (error) {
+    previewResult.value = null
+    appStore.showError(errorMessage(error, 'admin.promptAudit.errors.preview'))
+  } finally {
+    loading.preview = false
   }
 }
 

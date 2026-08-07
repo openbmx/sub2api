@@ -40,6 +40,12 @@
             </section>
           </div>
 
+          <section v-if="event.reason" data-test="risk-reason">
+            <h4 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.events.reason') }}</h4>
+            <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.events.reasonHint') }}</p>
+            <p class="mt-2 rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-dark-900 dark:text-dark-200">{{ event.reason }}</p>
+          </section>
+
           <div class="space-y-3">
             <h4 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.events.riskSummaries') }}</h4>
             <article v-for="issue in event.issue_summaries" :key="`${issue.scanner_id}-${issue.code}`" class="border-l-2 border-red-400 pl-4" data-test="risk-issue">
@@ -62,6 +68,9 @@
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.requestId') }}</dt><dd class="break-all font-mono">{{ event.snapshot.request_id || '—' }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.promptHash') }}</dt><dd class="break-all font-mono">{{ event.snapshot.prompt_hash }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.scanner') }}</dt><dd>{{ event.scanner_backend }} · {{ event.scanner_version }}</dd>
+          <template v-if="event.error_code">
+            <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.errorCode') }}</dt><dd class="font-mono">{{ event.error_code }}</dd>
+          </template>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.policy') }}</dt><dd>{{ event.policy_id }} · v{{ event.policy_version }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.guardEndpoint') }}</dt><dd>{{ event.guard_endpoint_id }}</dd>
           <dt class="text-gray-500">{{ t('admin.promptAudit.events.technical.config') }}</dt><dd>v{{ event.config_version }}</dd>
@@ -89,7 +98,7 @@ const tabs = ['summary', 'risks', 'technical'] as const
 const activeTab = ref<(typeof tabs)[number]>('summary')
 watch(() => props.event?.id, () => { activeTab.value = 'summary' })
 
-const DECISIONS = new Set(['pass', 'flag', 'critical'])
+const DECISIONS = new Set(['pass', 'flag', 'critical', 'unavailable'])
 const ACTIONS = new Set(['Allow', 'Warn', 'Block'])
 const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical'])
 
@@ -133,6 +142,8 @@ function formatGuardReturn(event: PromptAuditEvent): string {
     scanner_evidence: evidence,
     scanner_backend: event.scanner_backend,
     scanner_version: event.scanner_version,
+    reason: event.reason,
+    error_code: event.error_code,
     guard_endpoint_id: event.guard_endpoint_id,
     chunk_total: event.chunk_total,
     latency_ms: event.latency_ms,

@@ -54,6 +54,7 @@ type turnCountingEngine struct {
 }
 
 func (e *turnCountingEngine) EffectiveMode() securityaudit.Mode { return e.mode }
+func (e *turnCountingEngine) BlockingFailOpen() bool            { return false }
 func (e *turnCountingEngine) Enqueue(context.Context, securityaudit.Request) error {
 	e.enqueues.Add(1)
 	return nil

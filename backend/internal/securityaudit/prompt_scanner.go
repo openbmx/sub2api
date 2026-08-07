@@ -48,16 +48,24 @@ func AggregateResults(results []*NormalizedResult, latency time.Duration) (*Norm
 			aggregated.RiskLevel = result.RiskLevel
 			aggregated.Action = result.Action
 			aggregated.Safety = result.Safety
+			// The reason belongs to the chunk that drove the verdict; a later
+			// benign chunk must not overwrite the explanation for a block.
+			aggregated.Reason = result.Reason
 			aggregated.GuardEndpointID = result.GuardEndpointID
 			aggregated.ScannerVersion = result.ScannerVersion
+			aggregated.ScannerBackend = result.ScannerBackend
 			aggregated.PolicyID = result.PolicyID
 			aggregated.PolicyVersion = result.PolicyVersion
 		}
 		if aggregated.GuardEndpointID == "" {
 			aggregated.GuardEndpointID = result.GuardEndpointID
 			aggregated.ScannerVersion = result.ScannerVersion
+			aggregated.ScannerBackend = result.ScannerBackend
 			aggregated.PolicyID = result.PolicyID
 			aggregated.PolicyVersion = result.PolicyVersion
+			if aggregated.Reason == "" {
+				aggregated.Reason = result.Reason
+			}
 		}
 		for _, category := range result.Categories {
 			categories[category] = struct{}{}

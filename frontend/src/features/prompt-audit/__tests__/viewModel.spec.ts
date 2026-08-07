@@ -14,6 +14,7 @@ const config = (): PromptAuditConfig => ({
   enabled: true,
   blocking_enabled: false,
   blocking_latest_turn_only: false,
+  blocking_fail_open: false,
   store_pass_events: false,
   effective_mode: 'async_audit',
   strategy: 'priority',
@@ -61,6 +62,20 @@ describe('Prompt Audit view model', () => {
     const draft = configToDraft(config())
     draft.blocking_latest_turn_only = true
     expect(buildUpdateRequest(draft)).toMatchObject({ blocking_latest_turn_only: true })
+  })
+
+  it('carries the fail-open choice into the update payload', () => {
+    const draft = configToDraft(config())
+    expect(buildUpdateRequest(draft)).toMatchObject({ blocking_fail_open: false })
+    draft.blocking_fail_open = true
+    expect(buildUpdateRequest(draft)).toMatchObject({ blocking_fail_open: true })
+  })
+
+  it('treats the fail-open choice as a dirty change so it cannot be lost silently', () => {
+    const original = configToDraft(config())
+    const changed = configToDraft(config())
+    changed.blocking_fail_open = true
+    expect(draftFingerprint(changed)).not.toBe(draftFingerprint(original))
   })
 
   it('tracks dirty state from the full normalized save payload', () => {

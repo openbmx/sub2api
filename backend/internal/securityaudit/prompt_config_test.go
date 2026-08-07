@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,6 +81,135 @@ func TestPublicConfigNeverMarshalsToken(t *testing.T) {
 	require.NotContains(t, string(raw), "GUARD_TOKEN_CANARY_SECRET")
 	require.NotContains(t, string(raw), "ciphertext")
 	require.True(t, public.Endpoints[0].HasToken)
+}
+
+// Configs persisted before custom prompts existed have none of the new keys.
+// They must keep behaving exactly as before rather than failing to parse or
+// silently switching an endpoint onto the custom_json contract.
+func TestLegacyStoredConfigBackfillsModerationDefaults(t *testing.T) {
+	legacy := `{"enabled":true,"blocking_enabled":false,"strategy":"priority","worker_count":4,
+		"queue_capacity":32768,"scanners":["pii"],"all_groups":true,"group_ids":[],"config_version":7,
+		"endpoints":[{"id":"guard-1","name":"Guard","protocol":"openai_compatible",
+		"base_url":"http://127.0.0.1:8080","model":"sileader/qwen3guard:0.6b","timeout_ms":3000,
+		"input_limit":4000,"enabled":true}]}`
+	storage, err := ParseStorageConfig(legacy)
+	require.NoError(t, err)
+	require.Equal(t, ResponseFormatQwen3Guard, storage.Endpoints[0].ResponseFormat)
+	require.Equal(t, DefaultCustomAuditPrompt, storage.CustomPrompt)
+	require.InDelta(t, DefaultBlockThreshold, storage.BlockThreshold, 0.0001)
+	require.InDelta(t, DefaultFlagThreshold, storage.FlagThreshold, 0.0001)
+
+	active, err := ActiveFromStorage(storage, true, prefixEncryptor{})
+	require.NoError(t, err)
+	require.Equal(t, ModeAsync, active.EffectiveMode())
+	require.Equal(t, ResponseFormatQwen3Guard, active.Endpoints[0].ResponseFormat)
+}
+
+// The global policy must reach every node, since the scanner reads it from the
+// endpoint rather than from ActiveConfig.
+func TestActiveFromStorageDenormalizesPolicyOntoEndpoints(t *testing.T) {
+	storage := DefaultStorageConfig()
+	storage.CustomPrompt = "自定义策略"
+	storage.BlockThreshold, storage.FlagThreshold = 0.85, 0.3
+	storage.Endpoints = []StorageEndpoint{
+		{ID: "a", Name: "A", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8080", Model: DefaultGuardModel, TimeoutMS: 1000, InputLimit: 1000, Enabled: true, ResponseFormat: ResponseFormatCustomJSON},
+		{ID: "b", Name: "B", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8081", Model: DefaultGuardModel, TimeoutMS: 1000, InputLimit: 1000, Enabled: true, ResponseFormat: ResponseFormatQwen3Guard},
+	}
+	active, err := ActiveFromStorage(storage, true, prefixEncryptor{})
+	require.NoError(t, err)
+	for _, endpoint := range active.Endpoints {
+		require.Equal(t, "自定义策略", endpoint.CustomPrompt)
+		require.InDelta(t, 0.85, endpoint.BlockThreshold, 0.0001)
+		require.InDelta(t, 0.3, endpoint.FlagThreshold, 0.0001)
+	}
+	require.Equal(t, ResponseFormatCustomJSON, active.Endpoints[0].ResponseFormat)
+	require.Equal(t, ResponseFormatQwen3Guard, active.Endpoints[1].ResponseFormat)
+}
+
+func TestModerationPolicyValidation(t *testing.T) {
+	customEndpointStorage := func() StorageEndpoint {
+		return StorageEndpoint{ID: "a", Name: "A", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8080",
+			Model: DefaultGuardModel, TimeoutMS: 1000, InputLimit: 1000, Enabled: true, ResponseFormat: ResponseFormatCustomJSON}
+	}
+	t.Run("enabled custom_json node requires a prompt", func(t *testing.T) {
+		storage := DefaultStorageConfig()
+		storage.Enabled = true
+		storage.CustomPrompt = ""
+		storage.Endpoints = []StorageEndpoint{customEndpointStorage()}
+		require.Equal(t, ErrorCodeCustomPromptRequired, infraerrors.Reason(validateStorageConfig(storage)))
+	})
+	t.Run("disabled custom_json node does not require a prompt", func(t *testing.T) {
+		storage := DefaultStorageConfig()
+		storage.CustomPrompt = ""
+		endpoint := customEndpointStorage()
+		endpoint.Enabled = false
+		storage.Endpoints = []StorageEndpoint{endpoint}
+		require.NoError(t, validateStorageConfig(storage))
+	})
+	t.Run("unknown response format is rejected", func(t *testing.T) {
+		storage := DefaultStorageConfig()
+		endpoint := customEndpointStorage()
+		endpoint.ResponseFormat = "llama_guard"
+		storage.Endpoints = []StorageEndpoint{endpoint}
+		require.Equal(t, ErrorCodeInvalidResponseFormat, infraerrors.Reason(validateStorageConfig(storage)))
+	})
+	t.Run("thresholds must be ordered and in range", func(t *testing.T) {
+		require.Equal(t, ErrorCodeInvalidThreshold, infraerrors.Reason(validateModerationPolicy("x", 1.5, 0.4)))
+		require.Equal(t, ErrorCodeInvalidThreshold, infraerrors.Reason(validateModerationPolicy("x", 0.7, 1.5)))
+		require.Equal(t, ErrorCodeInvalidThreshold, infraerrors.Reason(validateModerationPolicy("x", 0.4, 0.7)))
+		require.NoError(t, validateModerationPolicy("x", 0.7, 0.4))
+		require.NoError(t, validateModerationPolicy("x", 0, 0), "zero means unset and is backfilled later")
+	})
+	t.Run("oversized prompt is rejected", func(t *testing.T) {
+		require.Equal(t, ErrorCodeCustomPromptTooLong,
+			infraerrors.Reason(validateModerationPolicy(strings.Repeat("字", MaxCustomPromptRunes+1), 0.7, 0.4)))
+	})
+}
+
+// An admin client that predates these fields sends neither the prompt nor the
+// endpoint contract; an unrelated save must not reset the policy to defaults.
+func TestSaveWithoutPolicyFieldsPreservesStoredPolicy(t *testing.T) {
+	manager := &ConfigManager{encryptor: prefixEncryptor{}, encryptionKeyConfigured: true}
+	current := DefaultStorageConfig()
+	current.CustomPrompt = "运营自定义的审核标准"
+	current.BlockThreshold, current.FlagThreshold = 0.9, 0.2
+	current.Endpoints = []StorageEndpoint{{
+		ID: "guard-1", Name: "Guard", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8080",
+		Model: DefaultGuardModel, TimeoutMS: 1000, InputLimit: 1000, Enabled: true,
+		ResponseFormat: ResponseFormatCustomJSON,
+	}}
+	request := UpdateConfigRequest{
+		ExpectedConfigVersion: current.ConfigVersion, Enabled: true, Strategy: "priority",
+		WorkerCount: 1, QueueCapacity: 10, Scanners: []string{"pii"}, AllGroups: true,
+		Endpoints: []UpdateEndpoint{{
+			ID: "guard-1", Name: "Guard", Protocol: "openai_compatible", BaseURL: "http://127.0.0.1:8080",
+			Model: DefaultGuardModel, TimeoutMS: 1000, InputLimit: 1000, Enabled: true,
+		}},
+	}
+	next, err := manager.buildNextStorage(current, request, 9)
+	require.NoError(t, err)
+	require.Equal(t, "运营自定义的审核标准", next.CustomPrompt)
+	require.InDelta(t, 0.9, next.BlockThreshold, 0.0001)
+	require.InDelta(t, 0.2, next.FlagThreshold, 0.0001)
+	require.Equal(t, ResponseFormatCustomJSON, next.Endpoints[0].ResponseFormat)
+}
+
+// changeSummary lands in settings history, so it must describe the prompt
+// without reproducing it.
+func TestChangeSummaryOmitsCustomPromptText(t *testing.T) {
+	const canary = "CUSTOM_PROMPT_CANARY_SECRET"
+	storage := DefaultStorageConfig()
+	storage.CustomPrompt = canary
+	summary := changeSummary(storage)
+	require.NotContains(t, summary, canary)
+	require.Contains(t, summary, `"custom_prompt_hash"`)
+	require.Contains(t, summary, `"custom_prompt_runes":"`+strconv.Itoa(len([]rune(canary)))+`"`)
+}
+
+func TestPublicConfigExposesDefaultPromptForRestore(t *testing.T) {
+	public := PublicFromStorage(DefaultStorageConfig(), true, nil)
+	require.Equal(t, DefaultCustomAuditPrompt, public.DefaultCustomPrompt)
+	require.Equal(t, DefaultCustomAuditPrompt, public.CustomPrompt)
 }
 
 func TestConfigRuntimeLoadErrorIsStableBoundedAndSecretFree(t *testing.T) {

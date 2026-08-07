@@ -152,6 +152,8 @@ func extractMessages(value any, wantedRoles ...string) []promptSegment {
 			continue
 		}
 		texts := contentTexts(message["content"])
+		// OpenAI-style tool calls hang off the message, not its content array.
+		texts = append(texts, messageToolCallTexts(message["tool_calls"])...)
 		for _, text := range texts {
 			result = append(result, promptSegment{text: text, user: role == "user", role: role})
 		}
@@ -208,6 +210,12 @@ func extractResponses(value any) []promptSegment {
 					}
 				} else if text := stringValue(entry["text"]); text != "" {
 					result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
+				} else {
+					// Responses function_call / function_call_output items carry no
+					// role or content and would otherwise be dropped.
+					for _, text := range contentBlockTexts(entry, 0) {
+						result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
+					}
 				}
 			}
 		}
@@ -256,6 +264,9 @@ func extractGemini(value any) []promptSegment {
 		for _, part := range parts {
 			if object, ok := part.(map[string]any); ok {
 				if text := stringValue(object["text"]); text != "" {
+					result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
+				}
+				for _, text := range geminiFunctionTexts(object) {
 					result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
 				}
 			}
@@ -407,7 +418,19 @@ func looksLikeMediaPayload(value string) bool {
 	return false
 }
 
+// maxContentBlockDepth bounds recursion through nested tool results. The body is
+// attacker-supplied, so a deeply nested payload must not drive unbounded
+// recursion during extraction.
+const maxContentBlockDepth = 6
+
 func contentTexts(value any) []string {
+	return contentTextsAtDepth(value, 0)
+}
+
+func contentTextsAtDepth(value any, depth int) []string {
+	if depth > maxContentBlockDepth {
+		return nil
+	}
 	switch typed := value.(type) {
 	case string:
 		return []string{typed}
@@ -418,13 +441,7 @@ func contentTexts(value any) []string {
 			if !ok {
 				continue
 			}
-			typeName := strings.ToLower(stringValue(object["type"]))
-			if typeName != "" && typeName != "text" && typeName != "input_text" && typeName != "output_text" {
-				continue
-			}
-			if text := stringValue(object["text"]); text != "" {
-				result = append(result, text)
-			}
+			result = append(result, contentBlockTexts(object, depth)...)
 		}
 		return result
 	case map[string]any:
@@ -433,6 +450,132 @@ func contentTexts(value any) []string {
 		}
 	}
 	return nil
+}
+
+// contentBlockTexts extracts auditable text from one content block.
+//
+// Tool calls, tool results and reasoning blocks are fully client-controlled in
+// an agent loop, so text placed there reached the upstream model while being
+// invisible to the auditor — a payload in a tool_result bypassed moderation
+// entirely. They are scanned like any other client-supplied text.
+func contentBlockTexts(object map[string]any, depth int) []string {
+	switch strings.ToLower(stringValue(object["type"])) {
+	case "", "text", "input_text", "output_text":
+		if text := stringValue(object["text"]); text != "" {
+			return []string{text}
+		}
+	case "thinking", "reasoning":
+		for _, key := range []string{"thinking", "reasoning", "text"} {
+			if text := stringValue(object[key]); text != "" {
+				return []string{text}
+			}
+		}
+	case "tool_use", "tool_call", "function_call":
+		return toolCallTexts(object)
+	case "tool_result", "tool_output", "function_call_output":
+		return toolResultTexts(object, depth)
+	}
+	return nil
+}
+
+// toolCallTexts renders a tool invocation as auditable text. Anthropic puts a
+// JSON object in "input"; OpenAI puts a JSON string in "arguments".
+func toolCallTexts(object map[string]any) []string {
+	parts := make([]string, 0, 2)
+	if name := stringValue(object["name"]); name != "" {
+		parts = append(parts, "tool: "+name)
+	}
+	if arguments := stringValue(object["arguments"]); arguments != "" {
+		parts = append(parts, arguments)
+	} else if encoded := encodeStructuredValue(object["input"]); encoded != "" {
+		parts = append(parts, encoded)
+	} else if encoded := encodeStructuredValue(object["args"]); encoded != "" {
+		parts = append(parts, encoded)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []string{strings.Join(parts, "\n")}
+}
+
+func toolResultTexts(object map[string]any, depth int) []string {
+	for _, key := range []string{"content", "output", "result", "response"} {
+		value, exists := object[key]
+		if !exists || value == nil {
+			continue
+		}
+		if texts := contentTextsAtDepth(value, depth+1); len(texts) > 0 {
+			return texts
+		}
+		if encoded := encodeStructuredValue(value); encoded != "" {
+			return []string{encoded}
+		}
+	}
+	return nil
+}
+
+// encodeStructuredValue renders a non-string tool payload as compact JSON so it
+// can be scanned as text.
+func encodeStructuredValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(string(encoded))
+	switch text {
+	case "", "null", "{}", "[]", `""`:
+		return ""
+	}
+	return text
+}
+
+// messageToolCallTexts reads OpenAI chat-completions tool calls, which live on
+// the message rather than inside its content array.
+func messageToolCallTexts(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		target := object
+		if function, ok := object["function"].(map[string]any); ok {
+			target = function
+		}
+		result = append(result, toolCallTexts(target)...)
+	}
+	return result
+}
+
+// geminiFunctionTexts reads Gemini functionCall / functionResponse parts, whose
+// shape differs from both Anthropic and OpenAI.
+func geminiFunctionTexts(object map[string]any) []string {
+	result := make([]string, 0, 2)
+	for _, key := range []string{"functionCall", "function_call"} {
+		call, ok := object[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		result = append(result, toolCallTexts(call)...)
+	}
+	for _, key := range []string{"functionResponse", "function_response"} {
+		response, ok := object[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		result = append(result, toolResultTexts(response, 0)...)
+	}
+	return result
 }
 
 func normalizeSegmentsLatestUserFirst(values []promptSegment) []string {

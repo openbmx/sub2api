@@ -44,6 +44,11 @@ type ConfigStore interface {
 	// It must stay false when blocking is not intended, even if config is
 	// untrusted—otherwise default-off deployments fail closed for all traffic.
 	BlockingActivationDegraded() bool
+	// BlockingFailOpen reports whether a failed blocking audit should pass the
+	// request through. It must answer from the last decodable storage intent
+	// even when the full config could not be activated, otherwise a degraded
+	// reload would silently ignore the administrator's choice.
+	BlockingFailOpen() bool
 	Public() (PublicConfig, error)
 	Save(ctx context.Context, req UpdateConfigRequest, actorID int64) (PublicConfig, error)
 	RuntimeState() (expected int64, active int64, loadedAt *time.Time, loadError string)
@@ -61,24 +66,37 @@ type StorageEndpoint struct {
 	TimeoutMS       int    `json:"timeout_ms"`
 	InputLimit      int    `json:"input_limit"`
 	Enabled         bool   `json:"enabled"`
+	// ResponseFormat selects the request/response contract for this node.
+	// Empty in configs saved before custom prompts existed; normalization
+	// backfills ResponseFormatQwen3Guard so their behavior is unchanged.
+	ResponseFormat string `json:"response_format"`
 }
 
 type storageConfig struct {
-	Enabled                bool              `json:"enabled"`
-	BlockingEnabled        bool              `json:"blocking_enabled"`
-	BlockingLatestTurnOnly bool              `json:"blocking_latest_turn_only"`
-	StorePassEvents        bool              `json:"store_pass_events"`
-	Strategy               string            `json:"strategy"`
-	WorkerCount            int               `json:"worker_count"`
-	QueueCapacity          int               `json:"queue_capacity"`
-	Scanners               []string          `json:"scanners"`
-	AllGroups              bool              `json:"all_groups"`
-	GroupIDs               []int64           `json:"group_ids"`
-	Endpoints              []StorageEndpoint `json:"endpoints"`
-	ConfigVersion          int64             `json:"config_version"`
-	UpdatedAt              time.Time         `json:"updated_at"`
-	UpdatedBy              int64             `json:"updated_by"`
-	ChangeSummary          string            `json:"change_summary"`
+	Enabled                bool `json:"enabled"`
+	BlockingEnabled        bool `json:"blocking_enabled"`
+	BlockingLatestTurnOnly bool `json:"blocking_latest_turn_only"`
+	// BlockingFailOpen passes a request through when the audit could not be
+	// completed. Default false keeps the established fail-closed posture; issue
+	// #3678 asks for fail-open so audit availability never gates traffic.
+	BlockingFailOpen bool              `json:"blocking_fail_open"`
+	StorePassEvents  bool              `json:"store_pass_events"`
+	Strategy         string            `json:"strategy"`
+	WorkerCount      int               `json:"worker_count"`
+	QueueCapacity    int               `json:"queue_capacity"`
+	Scanners         []string          `json:"scanners"`
+	AllGroups        bool              `json:"all_groups"`
+	GroupIDs         []int64           `json:"group_ids"`
+	Endpoints        []StorageEndpoint `json:"endpoints"`
+	// CustomPrompt is the administrator-authored moderation policy shared by
+	// every custom_json endpoint, so it is edited once rather than per node.
+	CustomPrompt   string    `json:"custom_prompt"`
+	BlockThreshold float64   `json:"block_threshold"`
+	FlagThreshold  float64   `json:"flag_threshold"`
+	ConfigVersion  int64     `json:"config_version"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	UpdatedBy      int64     `json:"updated_by"`
+	ChangeSummary  string    `json:"change_summary"`
 }
 
 type ActiveEndpoint struct {
@@ -91,6 +109,14 @@ type ActiveEndpoint struct {
 	TimeoutMS  int
 	InputLimit int
 	Enabled    bool
+	// ResponseFormat, CustomPrompt and the thresholds are denormalized onto the
+	// endpoint by ActiveFromStorage. ActiveEndpoint is runtime-only and never
+	// persisted, so carrying the global policy here lets PromptScanner.Scan keep
+	// its narrow signature instead of threading ActiveConfig through failover.
+	ResponseFormat string
+	CustomPrompt   string
+	BlockThreshold float64
+	FlagThreshold  float64
 	// TokenInvalid marks an endpoint whose persisted token ciphertext cannot be
 	// decrypted with the current encryption key (key changed or auto-generated
 	// on restart). The endpoint is kept visible for admins but excluded from
@@ -103,6 +129,7 @@ type ActiveConfig struct {
 	Enabled                bool
 	BlockingEnabled        bool
 	BlockingLatestTurnOnly bool
+	BlockingFailOpen       bool
 	StorePassEvents        bool
 	Strategy               string
 	WorkerCount            int
@@ -111,6 +138,9 @@ type ActiveConfig struct {
 	AllGroups              bool
 	GroupIDs               []int64
 	Endpoints              []ActiveEndpoint
+	CustomPrompt           string
+	BlockThreshold         float64
+	FlagThreshold          float64
 	ConfigVersion          int64
 	UpdatedAt              time.Time
 	UpdatedBy              int64
@@ -118,22 +148,24 @@ type ActiveConfig struct {
 }
 
 type PublicEndpoint struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Protocol    string `json:"protocol"`
-	BaseURL     string `json:"base_url"`
-	Model       string `json:"model"`
-	TimeoutMS   int    `json:"timeout_ms"`
-	InputLimit  int    `json:"input_limit"`
-	Enabled     bool   `json:"enabled"`
-	HasToken    bool   `json:"has_token"`
-	TokenStatus string `json:"token_status"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Protocol       string `json:"protocol"`
+	BaseURL        string `json:"base_url"`
+	Model          string `json:"model"`
+	TimeoutMS      int    `json:"timeout_ms"`
+	InputLimit     int    `json:"input_limit"`
+	Enabled        bool   `json:"enabled"`
+	HasToken       bool   `json:"has_token"`
+	TokenStatus    string `json:"token_status"`
+	ResponseFormat string `json:"response_format"`
 }
 
 type PublicConfig struct {
 	Enabled                bool             `json:"enabled"`
 	BlockingEnabled        bool             `json:"blocking_enabled"`
 	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
+	BlockingFailOpen       bool             `json:"blocking_fail_open"`
 	StorePassEvents        bool             `json:"store_pass_events"`
 	EffectiveMode          Mode             `json:"effective_mode"`
 	Strategy               string           `json:"strategy"`
@@ -143,23 +175,32 @@ type PublicConfig struct {
 	AllGroups              bool             `json:"all_groups"`
 	GroupIDs               []int64          `json:"group_ids"`
 	Endpoints              []PublicEndpoint `json:"endpoints"`
-	ConfigVersion          int64            `json:"config_version"`
-	UpdatedAt              time.Time        `json:"updated_at"`
-	UpdatedBy              int64            `json:"updated_by"`
-	ChangeSummary          string           `json:"change_summary"`
+	CustomPrompt           string           `json:"custom_prompt"`
+	DefaultCustomPrompt    string           `json:"default_custom_prompt"`
+	// CategoryAwareCustomPrompt is offered as an alternative preset because the
+	// default contract reports no categories, which leaves the scanner toggles
+	// with nothing to act on.
+	CategoryAwareCustomPrompt string    `json:"category_aware_custom_prompt"`
+	BlockThreshold            float64   `json:"block_threshold"`
+	FlagThreshold             float64   `json:"flag_threshold"`
+	ConfigVersion             int64     `json:"config_version"`
+	UpdatedAt                 time.Time `json:"updated_at"`
+	UpdatedBy                 int64     `json:"updated_by"`
+	ChangeSummary             string    `json:"change_summary"`
 }
 
 type UpdateEndpoint struct {
-	ID         string `json:"id" binding:"required"`
-	Name       string `json:"name" binding:"required"`
-	Protocol   string `json:"protocol"`
-	BaseURL    string `json:"base_url" binding:"required"`
-	Model      string `json:"model"`
-	Token      string `json:"token,omitempty"`
-	ClearToken bool   `json:"clear_token"`
-	TimeoutMS  int    `json:"timeout_ms"`
-	InputLimit int    `json:"input_limit"`
-	Enabled    bool   `json:"enabled"`
+	ID             string `json:"id" binding:"required"`
+	Name           string `json:"name" binding:"required"`
+	Protocol       string `json:"protocol"`
+	BaseURL        string `json:"base_url" binding:"required"`
+	Model          string `json:"model"`
+	Token          string `json:"token,omitempty"`
+	ClearToken     bool   `json:"clear_token"`
+	TimeoutMS      int    `json:"timeout_ms"`
+	InputLimit     int    `json:"input_limit"`
+	Enabled        bool   `json:"enabled"`
+	ResponseFormat string `json:"response_format"`
 }
 
 type UpdateConfigRequest struct {
@@ -167,6 +208,7 @@ type UpdateConfigRequest struct {
 	Enabled                bool             `json:"enabled"`
 	BlockingEnabled        bool             `json:"blocking_enabled"`
 	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
+	BlockingFailOpen       bool             `json:"blocking_fail_open"`
 	StorePassEvents        bool             `json:"store_pass_events"`
 	Strategy               string           `json:"strategy"`
 	WorkerCount            int              `json:"worker_count"`
@@ -175,6 +217,9 @@ type UpdateConfigRequest struct {
 	AllGroups              bool             `json:"all_groups"`
 	GroupIDs               []int64          `json:"group_ids"`
 	Endpoints              []UpdateEndpoint `json:"endpoints"`
+	CustomPrompt           string           `json:"custom_prompt"`
+	BlockThreshold         float64          `json:"block_threshold"`
+	FlagThreshold          float64          `json:"flag_threshold"`
 }
 
 func DefaultStorageConfig() storageConfig {
@@ -182,6 +227,7 @@ func DefaultStorageConfig() storageConfig {
 		Enabled:                false,
 		BlockingEnabled:        false,
 		BlockingLatestTurnOnly: false,
+		BlockingFailOpen:       false,
 		StorePassEvents:        false,
 		Strategy:               "priority",
 		WorkerCount:            DefaultWorkerCount,
@@ -190,6 +236,9 @@ func DefaultStorageConfig() storageConfig {
 		AllGroups:              true,
 		GroupIDs:               []int64{},
 		Endpoints:              []StorageEndpoint{},
+		CustomPrompt:           DefaultCustomAuditPrompt,
+		BlockThreshold:         DefaultBlockThreshold,
+		FlagThreshold:          DefaultFlagThreshold,
 		ConfigVersion:          1,
 	}
 }
@@ -230,6 +279,19 @@ func normalizeStorageConfig(cfg *storageConfig) {
 	}
 	cfg.Scanners = canonicalScannerIDs(cfg.Scanners)
 	cfg.GroupIDs = canonicalInt64s(cfg.GroupIDs)
+	cfg.CustomPrompt = strings.TrimSpace(cfg.CustomPrompt)
+	// Configs written before custom prompts existed decode these as zero. Filling
+	// defaults here—rather than rejecting—keeps existing deployments working with
+	// exactly their previous behavior.
+	if cfg.CustomPrompt == "" {
+		cfg.CustomPrompt = DefaultCustomAuditPrompt
+	}
+	if cfg.BlockThreshold <= 0 || cfg.BlockThreshold > 1 {
+		cfg.BlockThreshold = DefaultBlockThreshold
+	}
+	if cfg.FlagThreshold <= 0 || cfg.FlagThreshold > 1 {
+		cfg.FlagThreshold = DefaultFlagThreshold
+	}
 	// Preserve an invalid blocking-without-audit combination so validation can
 	// reject it instead of silently changing administrator intent.
 	for i := range cfg.Endpoints {
@@ -251,7 +313,38 @@ func normalizeStorageConfig(cfg *storageConfig) {
 		if ep.InputLimit == 0 {
 			ep.InputLimit = DefaultInputLimit
 		}
+		ep.ResponseFormat = strings.TrimSpace(ep.ResponseFormat)
+		if ep.ResponseFormat == "" {
+			ep.ResponseFormat = ResponseFormatQwen3Guard
+		}
 	}
+}
+
+func isKnownResponseFormat(value string) bool {
+	switch strings.TrimSpace(value) {
+	case ResponseFormatQwen3Guard, ResponseFormatCustomJSON:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateModerationPolicy checks the fields shared by storage and update
+// validation so a request and a persisted config can never disagree.
+func validateModerationPolicy(customPrompt string, blockThreshold, flagThreshold float64) error {
+	if len([]rune(strings.TrimSpace(customPrompt))) > MaxCustomPromptRunes {
+		return infraerrors.BadRequest(ErrorCodeCustomPromptTooLong, "自定义审核提示词超出长度上限")
+	}
+	if blockThreshold != 0 && (blockThreshold <= 0 || blockThreshold > 1) {
+		return infraerrors.BadRequest(ErrorCodeInvalidThreshold, "阻断阈值必须位于 0 与 1 之间")
+	}
+	if flagThreshold != 0 && (flagThreshold <= 0 || flagThreshold > 1) {
+		return infraerrors.BadRequest(ErrorCodeInvalidThreshold, "标记阈值必须位于 0 与 1 之间")
+	}
+	if blockThreshold != 0 && flagThreshold != 0 && flagThreshold > blockThreshold {
+		return infraerrors.BadRequest(ErrorCodeInvalidThreshold, "标记阈值不能高于阻断阈值")
+	}
+	return nil
 }
 
 func validateStorageConfig(cfg storageConfig) error {
@@ -273,8 +366,12 @@ func validateStorageConfig(cfg storageConfig) error {
 	if len(cfg.Scanners) == 0 {
 		return infraerrors.BadRequest("prompt_audit_scanners_required", "至少需要启用一个风险分类")
 	}
+	if err := validateModerationPolicy(cfg.CustomPrompt, cfg.BlockThreshold, cfg.FlagThreshold); err != nil {
+		return err
+	}
 	seen := make(map[string]struct{}, len(cfg.Endpoints))
 	enabled := 0
+	customJSONEnabled := false
 	for _, ep := range cfg.Endpoints {
 		if ep.ID == "" || ep.Name == "" {
 			return infraerrors.BadRequest("prompt_audit_invalid_endpoint", "审计节点 ID 和名称不能为空")
@@ -285,6 +382,9 @@ func validateStorageConfig(cfg storageConfig) error {
 		seen[ep.ID] = struct{}{}
 		if ep.Protocol != "openai_compatible" {
 			return infraerrors.BadRequest("prompt_audit_invalid_endpoint_protocol", "审计节点仅支持 OpenAI 兼容协议")
+		}
+		if !isKnownResponseFormat(ep.ResponseFormat) {
+			return infraerrors.BadRequest(ErrorCodeInvalidResponseFormat, "审计节点响应契约无效")
 		}
 		if _, err := NormalizeBaseURL(ep.BaseURL); err != nil {
 			return err
@@ -297,10 +397,16 @@ func validateStorageConfig(cfg storageConfig) error {
 		}
 		if ep.Enabled {
 			enabled++
+			if ep.ResponseFormat == ResponseFormatCustomJSON {
+				customJSONEnabled = true
+			}
 		}
 	}
 	if cfg.Enabled && enabled == 0 {
 		return infraerrors.BadRequest("prompt_audit_endpoint_required", "启用提示词审计前至少需要启用一个审计节点")
+	}
+	if customJSONEnabled && strings.TrimSpace(cfg.CustomPrompt) == "" {
+		return infraerrors.BadRequest(ErrorCodeCustomPromptRequired, "启用自定义 JSON 契约的节点前必须填写审核提示词")
 	}
 	return nil
 }
@@ -333,12 +439,20 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 			}
 		}
 	}
+	if err := validateModerationPolicy(req.CustomPrompt, req.BlockThreshold, req.FlagThreshold); err != nil {
+		return err
+	}
 	for _, endpoint := range req.Endpoints {
 		if endpoint.TimeoutMS < MinTimeoutMS || endpoint.TimeoutMS > MaxTimeoutMS {
 			return infraerrors.BadRequest("prompt_audit_invalid_timeout", "审计节点超时超出允许范围")
 		}
 		if endpoint.InputLimit < MinInputLimit || endpoint.InputLimit > MaxInputLimit {
 			return infraerrors.BadRequest("prompt_audit_invalid_input_limit", "审计节点输入上限超出允许范围")
+		}
+		// An empty response_format is accepted and backfilled by normalization so
+		// older admin clients can keep saving configs unchanged.
+		if strings.TrimSpace(endpoint.ResponseFormat) != "" && !isKnownResponseFormat(endpoint.ResponseFormat) {
+			return infraerrors.BadRequest(ErrorCodeInvalidResponseFormat, "审计节点响应契约无效")
 		}
 	}
 	return nil
@@ -408,26 +522,35 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL,
 			Model: ep.Model, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit,
 			Enabled: ep.Enabled, HasToken: hasToken, TokenStatus: status,
+			ResponseFormat: ep.ResponseFormat,
 		})
 	}
 	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled}
 	return PublicConfig{
-		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, StorePassEvents: cfg.StorePassEvents,
+		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
+		BlockingFailOpen: cfg.BlockingFailOpen, StorePassEvents: cfg.StorePassEvents,
 		EffectiveMode: active.EffectiveMode(), Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: scanners, AllGroups: cfg.AllGroups,
-		GroupIDs: groupIDs, Endpoints: endpoints, ConfigVersion: cfg.ConfigVersion,
-		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
+		GroupIDs: groupIDs, Endpoints: endpoints,
+		// DefaultCustomPrompt lets the admin UI offer "restore default" without
+		// duplicating the template in frontend code.
+		CustomPrompt: cfg.CustomPrompt, DefaultCustomPrompt: DefaultCustomAuditPrompt,
+		CategoryAwareCustomPrompt: CategoryAwareAuditPrompt,
+		BlockThreshold:            cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
+		ConfigVersion: cfg.ConfigVersion,
+		UpdatedAt:     cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}
 }
 
 func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor SecretEncryptor) (ActiveConfig, error) {
 	active := ActiveConfig{
 		RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled,
-		BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
-		StorePassEvents:        cfg.StorePassEvents, Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
+		BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, BlockingFailOpen: cfg.BlockingFailOpen,
+		StorePassEvents: cfg.StorePassEvents, Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: append([]string(nil), cfg.Scanners...), AllGroups: cfg.AllGroups,
 		GroupIDs: append([]int64(nil), cfg.GroupIDs...), ConfigVersion: cfg.ConfigVersion,
 		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
+		CustomPrompt: cfg.CustomPrompt, BlockThreshold: cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		Endpoints: make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
 	}
 	for _, ep := range cfg.Endpoints {
@@ -449,30 +572,56 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 				token = plain
 			}
 		}
+		responseFormat := strings.TrimSpace(ep.ResponseFormat)
+		if responseFormat == "" {
+			responseFormat = ResponseFormatQwen3Guard
+		}
 		active.Endpoints = append(active.Endpoints, ActiveEndpoint{
 			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL, Model: ep.Model,
 			Token: token, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit,
 			Enabled: ep.Enabled && !tokenInvalid, TokenInvalid: tokenInvalid,
+			// The global policy is copied onto every node so the scanner can stay
+			// a pure (endpoint, chunk) function across failover and probe paths.
+			ResponseFormat: responseFormat, CustomPrompt: cfg.CustomPrompt,
+			BlockThreshold: cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		})
 	}
 	return active, nil
 }
 
 func changeSummary(cfg storageConfig) string {
+	customJSONCount := 0
+	for _, ep := range cfg.Endpoints {
+		if ep.ResponseFormat == ResponseFormatCustomJSON {
+			customJSONCount++
+		}
+	}
 	summary := struct {
-		Enabled                bool   `json:"enabled"`
-		BlockingEnabled        bool   `json:"blocking_enabled"`
-		BlockingLatestTurnOnly bool   `json:"blocking_latest_turn_only"`
-		StorePassEvents        bool   `json:"store_pass_events"`
-		EndpointCount          int    `json:"endpoint_count"`
-		ScannerCount           int    `json:"scanner_count"`
-		AllGroups              bool   `json:"all_groups"`
-		GroupCount             int    `json:"group_count"`
-		GroupHash              string `json:"group_hash"`
-	}{cfg.Enabled, cfg.BlockingEnabled, cfg.BlockingLatestTurnOnly, cfg.StorePassEvents, len(cfg.Endpoints), len(cfg.Scanners), cfg.AllGroups, len(cfg.GroupIDs), ""}
+		Enabled                bool    `json:"enabled"`
+		BlockingEnabled        bool    `json:"blocking_enabled"`
+		BlockingLatestTurnOnly bool    `json:"blocking_latest_turn_only"`
+		BlockingFailOpen       bool    `json:"blocking_fail_open"`
+		StorePassEvents        bool    `json:"store_pass_events"`
+		EndpointCount          int     `json:"endpoint_count"`
+		CustomJSONCount        int     `json:"custom_json_endpoint_count"`
+		ScannerCount           int     `json:"scanner_count"`
+		AllGroups              bool    `json:"all_groups"`
+		GroupCount             int     `json:"group_count"`
+		GroupHash              string  `json:"group_hash"`
+		BlockThreshold         float64 `json:"block_threshold"`
+		FlagThreshold          float64 `json:"flag_threshold"`
+		// Only the prompt's length and digest are summarized: the text itself is
+		// administrator content and must not be duplicated into settings history.
+		CustomPromptRunes string `json:"custom_prompt_runes"`
+		CustomPromptHash  string `json:"custom_prompt_hash"`
+	}{cfg.Enabled, cfg.BlockingEnabled, cfg.BlockingLatestTurnOnly, cfg.BlockingFailOpen, cfg.StorePassEvents,
+		len(cfg.Endpoints), customJSONCount, len(cfg.Scanners), cfg.AllGroups, len(cfg.GroupIDs), "",
+		cfg.BlockThreshold, cfg.FlagThreshold, customPromptDigestSummary(cfg.CustomPrompt), ""}
 	rawGroups, _ := json.Marshal(cfg.GroupIDs)
 	digest := sha256.Sum256(rawGroups)
 	summary.GroupHash = hex.EncodeToString(digest[:])
+	promptDigest := sha256.Sum256([]byte(cfg.CustomPrompt))
+	summary.CustomPromptHash = hex.EncodeToString(promptDigest[:])
 	raw, _ := json.Marshal(summary)
 	return string(raw)
 }

@@ -53,6 +53,8 @@ type Event struct {
 	ScannerEvidence map[string]string  `json:"scanner_evidence"`
 	ScannerBackend  string             `json:"scanner_backend"`
 	ScannerVersion  string             `json:"scanner_version"`
+	Reason          string             `json:"reason"`
+	ErrorCode       string             `json:"error_code"`
 	GuardEndpointID string             `json:"guard_endpoint_id"`
 	PolicyID        string             `json:"policy_id"`
 	PolicyVersion   int                `json:"policy_version"`
@@ -70,6 +72,9 @@ type JobRepository interface {
 	ClaimNextJob(ctx context.Context, now time.Time) (*Job, bool, error)
 	RefreshLease(ctx context.Context, jobID, claimVersion int64, now time.Time) error
 	Complete(ctx context.Context, job *Job, result *NormalizedResult, storePassEvents bool) (*Event, error)
+	// RecordJobFailure attaches an event to a job that already reached a terminal
+	// failed state, so an unjudged request is visible in the events view.
+	RecordJobFailure(ctx context.Context, jobID int64, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult) (*Event, error)
 	Retry(ctx context.Context, jobID, claimVersion int64, next time.Time, code, message string) error
 	Fail(ctx context.Context, jobID, claimVersion int64, code, message string) error
 	ReclaimStale(ctx context.Context, stagingBefore, processingBefore time.Time, limit int) (int64, error)
@@ -278,6 +283,13 @@ func (r *PostgreSQLRepository) QueueStats(ctx context.Context) (QueueStats, erro
 	return stats, rows.Err()
 }
 
+func (r *PostgreSQLRepository) RecordJobFailure(ctx context.Context, jobID int64, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult) (*Event, error) {
+	if result == nil {
+		return nil, errors.New("prompt guard result required")
+	}
+	return insertEvent(ctx, r.db, jobID, snapshot.Redacted(), configVersion, result)
+}
+
 func (r *PostgreSQLRepository) RecordBlocking(ctx context.Context, snapshot PromptSnapshot, configVersion int64, result *NormalizedResult, storePassEvents bool) (*Event, error) {
 	if result == nil {
 		return nil, errors.New("prompt guard result required")
@@ -308,6 +320,23 @@ func (r *PostgreSQLRepository) RecordBlocking(ctx context.Context, snapshot Prom
 // Risk events are always persisted while prompt auditing itself is enabled.
 func shouldStorePromptAuditEvent(decision EventDecision, storePassEvents bool) bool {
 	return decision != EventPass || storePassEvents
+}
+
+// UnavailableResult builds the event payload for an audit that could not be
+// completed. Action reflects what the gateway did with the request, so a
+// fail-open pass-through and a fail-closed rejection are distinguishable.
+func UnavailableResult(errorCode string, allowed bool, latency time.Duration) *NormalizedResult {
+	action := ActionBlock
+	if allowed {
+		action = ActionAllow
+	}
+	return &NormalizedResult{
+		Decision: EventUnavailable, RiskLevel: RiskLow, Action: action,
+		Categories: []string{}, MatchedScanners: []string{},
+		ScannerScores: map[string]float64{}, ScannerEvidence: map[string]string{},
+		ScannerBackend: "unavailable", ErrorCode: errorCode,
+		PolicyID: "priority", PolicyVersion: 1, LatencyMS: int(latency.Milliseconds()),
+	}
 }
 
 type sqlQueryer interface {
@@ -349,9 +378,9 @@ func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot 
 			group_id,group_name,provider,endpoint,protocol,model,prompt_hash,redacted_preview,stage,
 			decision,risk_level,action,categories,matched_scanners,scanner_scores,scanner_evidence,
 			scanner_backend,scanner_version,guard_endpoint_id,policy_id,policy_version,config_version,chunk_total,latency_ms,
-			full_prompt
+			reason,error_code,full_prompt
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-			$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+			$20::jsonb,$21::jsonb,$22::jsonb,$23::jsonb,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
 		RETURNING `+eventDetailColumns("prompt_audit_events"),
 		jobID, snapshot.RequestID, nullableID(snapshot.UserID), snapshot.UsernameSnapshot, snapshot.UserEmailSnapshot,
 		nullableID(snapshot.APIKeyID), snapshot.APIKeyNameSnapshot, snapshot.GroupID, snapshot.GroupName,
@@ -359,7 +388,7 @@ func insertEvent(ctx context.Context, queryer sqlQueryer, jobID int64, snapshot 
 		snapshot.RedactedPreview, normalizeStage(snapshot.Stage), string(result.Decision), string(result.RiskLevel),
 		string(result.Action), categories, matched, scores, evidenceJSON, result.ScannerBackend, result.ScannerVersion,
 		result.GuardEndpointID, result.PolicyID, result.PolicyVersion, configVersion, result.ChunkTotal, result.LatencyMS,
-		snapshot.FullPrompt)
+		RedactPreview(result.Reason, MaxAuditReasonRunes), result.ErrorCode, snapshot.FullPrompt)
 	return scanEvent(row, true)
 }
 
