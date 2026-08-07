@@ -15,6 +15,9 @@ type PromptEngine interface {
 	EffectiveMode() Mode
 	Enqueue(ctx context.Context, req Request) error
 	Evaluate(ctx context.Context, req Request) (*PromptDecision, error)
+	// BlockingFailOpen reports whether a request should pass through when the
+	// blocking audit could not be completed.
+	BlockingFailOpen() bool
 }
 
 type Coordinator struct {
@@ -40,12 +43,12 @@ func (c *Coordinator) Check(ctx context.Context, req Request) Decision {
 		// context and copies request memory before it can outlive the Handler.
 		_ = c.prompt.Enqueue(ctx, req.Clone())
 		legacy, _ := c.checkLegacy(ctx, req)
-		return prioritize(legacy, nil)
+		return prioritize(legacy, nil, false)
 	case ModeBlocking:
 		return c.checkBlocking(ctx, req)
 	default:
 		legacy, _ := c.checkLegacy(ctx, req)
-		return prioritize(legacy, nil)
+		return prioritize(legacy, nil, false)
 	}
 }
 
@@ -81,7 +84,7 @@ func (c *Coordinator) checkBlocking(ctx context.Context, req Request) Decision {
 		prompt = result
 	}()
 	wg.Wait()
-	return prioritize(legacy, prompt)
+	return prioritize(legacy, prompt, c.prompt != nil && c.prompt.BlockingFailOpen())
 }
 
 func (c *Coordinator) checkLegacy(ctx context.Context, req Request) (*LegacyDecision, error) {
@@ -91,7 +94,7 @@ func (c *Coordinator) checkLegacy(ctx context.Context, req Request) (*LegacyDeci
 	return c.legacy.Check(ctx, req)
 }
 
-func prioritize(legacy *LegacyDecision, prompt *PromptDecision) Decision {
+func prioritize(legacy *LegacyDecision, prompt *PromptDecision, failOpen bool) Decision {
 	if legacy != nil && legacy.Blocked {
 		status := legacy.StatusCode
 		if status < 400 || status > 599 {
@@ -113,11 +116,18 @@ func prioritize(legacy *LegacyDecision, prompt *PromptDecision) Decision {
 	case DecisionBlock:
 		return Decision{Kind: DecisionBlock, HTTPStatus: http.StatusForbidden, ErrorCode: ErrorCodeBlocked,
 			ClientMessage: "提示词安全审计拒绝了该请求，请调整输入后重试", Legacy: legacy, Prompt: prompt}
-	case DecisionInvalid:
-		return Decision{Kind: DecisionInvalid, HTTPStatus: http.StatusServiceUnavailable, ErrorCode: ErrorCodeInvalidResponse,
-			ClientMessage: "提示词安全审计暂时不可用，请稍后重试", Legacy: legacy, Prompt: prompt}
-	case DecisionUnavailable:
-		return Decision{Kind: DecisionUnavailable, HTTPStatus: http.StatusServiceUnavailable, ErrorCode: ErrorCodeUnavailable,
+	case DecisionInvalid, DecisionUnavailable:
+		code := ErrorCodeUnavailable
+		if prompt.Kind == DecisionInvalid {
+			code = ErrorCodeInvalidResponse
+		}
+		if failOpen {
+			// Kind stays unavailable so gateway logs and metrics still show the
+			// audit did not run; only the routing outcome changes.
+			return Decision{Kind: prompt.Kind, HTTPStatus: http.StatusOK, ErrorCode: code,
+				Legacy: legacy, Prompt: prompt, AllowNextStage: true}
+		}
+		return Decision{Kind: prompt.Kind, HTTPStatus: http.StatusServiceUnavailable, ErrorCode: code,
 			ClientMessage: "提示词安全审计暂时不可用，请稍后重试", Legacy: legacy, Prompt: prompt}
 	case DecisionFlag:
 		return Decision{Kind: DecisionFlag, HTTPStatus: http.StatusOK, Legacy: legacy, Prompt: prompt, AllowNextStage: true}

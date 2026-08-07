@@ -1,6 +1,7 @@
 export type PromptAuditMode = 'off' | 'async_audit' | 'blocking'
-export type PromptDecision = 'pass' | 'flag' | 'critical'
+export type PromptDecision = 'pass' | 'flag' | 'critical' | 'unavailable'
 export type PromptRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+export type PromptResponseFormat = 'qwen3guard' | 'custom_json'
 
 export interface PromptAuditEndpoint {
   id: string
@@ -13,6 +14,7 @@ export interface PromptAuditEndpoint {
   enabled: boolean
   has_token: boolean
   token_status: 'configured' | 'missing' | 'invalid' | string
+  response_format: PromptResponseFormat
 }
 
 export interface PromptAuditEndpointDraft extends PromptAuditEndpoint {
@@ -24,6 +26,8 @@ export interface PromptAuditConfig {
   enabled: boolean
   blocking_enabled: boolean
   blocking_latest_turn_only: boolean
+  /** Pass a request through when the blocking audit could not be completed. */
+  blocking_fail_open: boolean
   store_pass_events: boolean
   effective_mode: PromptAuditMode
   strategy: 'priority'
@@ -33,6 +37,13 @@ export interface PromptAuditConfig {
   all_groups: boolean
   group_ids: number[]
   endpoints: PromptAuditEndpoint[]
+  custom_prompt: string
+  /** Server-supplied template, so "restore default" needs no frontend copy. */
+  default_custom_prompt: string
+  /** Alternative preset whose contract populates the nine scanner categories. */
+  category_aware_custom_prompt: string
+  block_threshold: number
+  flag_threshold: number
   config_version: number
   updated_at: string
   updated_by: number
@@ -48,6 +59,7 @@ export interface PromptAuditUpdateRequest {
   enabled: boolean
   blocking_enabled: boolean
   blocking_latest_turn_only: boolean
+  blocking_fail_open: boolean
   store_pass_events: boolean
   strategy: 'priority'
   worker_count: number
@@ -55,6 +67,9 @@ export interface PromptAuditUpdateRequest {
   scanners: string[]
   all_groups: boolean
   group_ids: number[]
+  custom_prompt: string
+  block_threshold: number
+  flag_threshold: number
   endpoints: Array<{
     id: string
     name: string
@@ -66,7 +81,42 @@ export interface PromptAuditUpdateRequest {
     timeout_ms: number
     input_limit: number
     enabled: boolean
+    response_format: PromptResponseFormat
   }>
+}
+
+export interface PromptPreviewRequest {
+  endpoint_id: string
+  content: string
+  /** Overrides for this call only, so an unsaved draft can be tried. */
+  custom_prompt?: string
+  block_threshold?: number
+  flag_threshold?: number
+}
+
+export interface PromptPreviewResult {
+  ok: boolean
+  endpoint_id: string
+  endpoint_name: string
+  model: string
+  response_format: PromptResponseFormat
+  latency_ms: number
+  /** Upstream HTTP status when the call failed; 0 when it never got a response. */
+  http_status: number
+  raw_response: string
+  decision: PromptDecision
+  risk_level: PromptRiskLevel
+  action: 'Allow' | 'Warn' | 'Block' | string
+  safety: string
+  reason: string
+  categories: string[]
+  matched_scanners: string[]
+  scanner_scores: Record<string, number>
+  block_threshold: number
+  flag_threshold: number
+  truncated_input: boolean
+  error_code?: string
+  message: string
 }
 
 export interface PromptProbeResult {
@@ -185,6 +235,9 @@ export interface PromptAuditEvent {
   scanner_evidence: Record<string, string>
   scanner_backend: string
   scanner_version: string
+  reason: string
+  /** Set on `unavailable` events: why the audit could not be completed. */
+  error_code: string
   guard_endpoint_id: string
   policy_id: string
   policy_version: number

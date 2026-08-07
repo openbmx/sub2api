@@ -24,13 +24,15 @@ func (f *fakeLegacyEngine) Check(context.Context, Request) (*LegacyDecision, err
 
 type fakePromptEngine struct {
 	mode      Mode
+	failOpen  bool
 	decision  *PromptDecision
 	err       error
 	enqueues  atomic.Int64
 	evaluates atomic.Int64
 }
 
-func (f *fakePromptEngine) EffectiveMode() Mode { return f.mode }
+func (f *fakePromptEngine) EffectiveMode() Mode    { return f.mode }
+func (f *fakePromptEngine) BlockingFailOpen() bool { return f.failOpen }
 func (f *fakePromptEngine) Enqueue(context.Context, Request) error {
 	f.enqueues.Add(1)
 	return f.err

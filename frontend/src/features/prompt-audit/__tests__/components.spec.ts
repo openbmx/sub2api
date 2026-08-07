@@ -6,6 +6,7 @@ import PolicyPanel from '../components/PolicyPanel.vue'
 import EventWorkspace from '../components/EventWorkspace.vue'
 import EventDetailDialog from '../components/EventDetailDialog.vue'
 import FilterDeleteDialog from '../components/FilterDeleteDialog.vue'
+import PromptPreviewDialog from '../components/PromptPreviewDialog.vue'
 import type { PromptAuditDraft, PromptAuditEndpointDraft, PromptAuditEvent, PromptEventFilters } from '../types'
 import { emptyEventFilters, resolveDeleteRangeFilters, SCANNER_CATALOG } from '../viewModel'
 
@@ -21,7 +22,11 @@ const endpoint = (): PromptAuditEndpointDraft => ({
   id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
   model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true,
   has_token: true, token_status: 'configured', token: '', clear_token: false,
+  response_format: 'qwen3guard',
 })
+
+const DEFAULT_PROMPT = '[SYSTEM — IMMUTABLE] default template'
+const CATEGORY_PROMPT = '[SYSTEM — IMMUTABLE] category aware template'
 
 describe('Prompt Audit components', () => {
   beforeEach(() => vi.restoreAllMocks())
@@ -65,14 +70,188 @@ describe('Prompt Audit components', () => {
     expect(token.attributes('placeholder')).toContain('admin.promptAudit.pool.reenterSecret')
   })
 
-  it('supports group search, stale configured groups, nine scanners, and bounded worker inputs', async () => {
+  it('lets an endpoint switch to the custom JSON contract', async () => {
+    const wrapper = mount(EndpointPool, {
+      props: { endpoints: [endpoint()], probeResults: {}, probingIds: [] },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    expect(wrapper.text()).toContain('admin.promptAudit.pool.responseFormats.qwen3guard')
+
+    const edit = wrapper.findAll('button').find((button) => button.text().includes('common.edit'))
+    await edit!.trigger('click')
+    await wrapper.get('[aria-label="admin.promptAudit.pool.responseFormat"]').setValue('custom_json')
+    await wrapper.get('[data-test="save-endpoint"]').trigger('click')
+    const updated = wrapper.emitted('update:endpoints')?.at(-1)?.[0] as PromptAuditEndpointDraft[]
+    expect(updated[0].response_format).toBe('custom_json')
+  })
+
+  it('edits the moderation prompt, restores the default, and flags an unusable policy', async () => {
     const draft: PromptAuditDraft = {
-      enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
-      worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: false, group_ids: [1, 99],
-      endpoints: [endpoint()], config_version: 1, updated_at: '', updated_by: 0, change_summary: '',
+      enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, blocking_fail_open: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
+      worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: true, group_ids: [],
+      endpoints: [{ ...endpoint(), response_format: 'custom_json' }], config_version: 1, updated_at: '', updated_by: 0, change_summary: '',
+      custom_prompt: '自定义策略', default_custom_prompt: DEFAULT_PROMPT, block_threshold: 0.7, flag_threshold: 0.4,
     }
     const wrapper = mount(PolicyPanel, {
-      props: { draft, groups: [{ id: 1, name: 'Alpha', platform: 'openai', status: 'active' }, { id: 2, name: 'Beta', platform: 'claude', status: 'inactive' }] },
+      props: { draft, groups: [], defaultCustomPrompt: DEFAULT_PROMPT, categoryAwareCustomPrompt: CATEGORY_PROMPT },
+    })
+
+    // An enabled custom_json node means this section is live, not informational.
+    expect(wrapper.text()).not.toContain('admin.promptAudit.moderation.inactiveHint')
+
+    await wrapper.get('[aria-label="admin.promptAudit.moderation.prompt"]').setValue('新的审核标准')
+    expect((wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft).custom_prompt).toBe('新的审核标准')
+
+    const restore = wrapper.findAll('button').find((button) => button.text().includes('admin.promptAudit.moderation.restoreDefault'))
+    await restore!.trigger('click')
+    expect((wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft).custom_prompt).toBe(DEFAULT_PROMPT)
+
+    const preview = wrapper.findAll('button').find((button) => button.text().includes('admin.promptAudit.moderation.tryIt'))
+    await preview!.trigger('click')
+    expect(wrapper.emitted('preview')).toHaveLength(1)
+
+    // A flag threshold above the block threshold would never produce a warning.
+    await wrapper.setProps({ draft: { ...draft, flag_threshold: 0.9 } })
+    expect(wrapper.text()).toContain('admin.promptAudit.moderation.thresholdOrder')
+
+    await wrapper.setProps({ draft: { ...draft, custom_prompt: '  ' } })
+    expect(wrapper.text()).toContain('admin.promptAudit.moderation.promptRequired')
+  })
+
+  // The default prompt returns no categories, so the scanner toggles have
+  // nothing to act on until the category preset is chosen. Saying so beats
+  // leaving nine toggles that silently do nothing.
+  it('warns that scanner toggles are inert under the default prompt and can switch preset', async () => {
+    const draft: PromptAuditDraft = {
+      enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, blocking_fail_open: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
+      worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: true, group_ids: [],
+      endpoints: [{ ...endpoint(), response_format: 'custom_json' }], config_version: 1, updated_at: '', updated_by: 0, change_summary: '',
+      custom_prompt: DEFAULT_PROMPT, default_custom_prompt: DEFAULT_PROMPT,
+      category_aware_custom_prompt: CATEGORY_PROMPT, block_threshold: 0.7, flag_threshold: 0.4,
+    }
+    const wrapper = mount(PolicyPanel, {
+      props: { draft, groups: [], defaultCustomPrompt: DEFAULT_PROMPT, categoryAwareCustomPrompt: CATEGORY_PROMPT },
+    })
+    expect(wrapper.find('[data-test="scanners-inert-hint"]').exists()).toBe(true)
+
+    await wrapper.get('[data-test="use-category-preset"]').trigger('click')
+    expect((wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft).custom_prompt).toBe(CATEGORY_PROMPT)
+
+    // With the category preset in use the toggles matter again.
+    await wrapper.setProps({ draft: { ...draft, custom_prompt: CATEGORY_PROMPT } })
+    expect(wrapper.find('[data-test="scanners-inert-hint"]').exists()).toBe(false)
+  })
+
+  it('marks the moderation section inactive when no enabled node uses the custom contract', () => {
+    const draft: PromptAuditDraft = {
+      enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, blocking_fail_open: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
+      worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: true, group_ids: [],
+      // A disabled custom_json node must not make the section look live.
+      endpoints: [endpoint(), { ...endpoint(), id: 'guard-2', response_format: 'custom_json', enabled: false }],
+      config_version: 1, updated_at: '', updated_by: 0, change_summary: '',
+      custom_prompt: '', default_custom_prompt: DEFAULT_PROMPT, block_threshold: 0.7, flag_threshold: 0.4,
+    }
+    const wrapper = mount(PolicyPanel, {
+      props: { draft, groups: [], defaultCustomPrompt: DEFAULT_PROMPT, categoryAwareCustomPrompt: CATEGORY_PROMPT },
+    })
+    expect(wrapper.text()).toContain('admin.promptAudit.moderation.inactiveHint')
+    expect(wrapper.text()).not.toContain('admin.promptAudit.moderation.promptRequired')
+  })
+
+  it('runs a preview against a saved node and reports the verdict', async () => {
+    const wrapper = mount(PromptPreviewDialog, {
+      props: {
+        show: true,
+        endpoints: [endpoint(), { ...endpoint(), id: 'guard-2', name: 'Custom', response_format: 'custom_json' }],
+        running: false,
+        result: null,
+        draftPrompt: '草稿提示词',
+        blockThreshold: 0.7,
+        flagThreshold: 0.4,
+      },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    // The custom_json node is preselected: it is the one being tuned.
+    expect(wrapper.get<HTMLSelectElement>('[data-test="preview-endpoint"]').element.value).toBe('guard-2')
+
+    const runButton = wrapper.get('[data-test="run-preview"]')
+    expect(runButton.attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-test="preview-content"]').setValue('检查这段内容')
+    await runButton.trigger('click')
+    expect(wrapper.emitted('run')?.[0]?.[0]).toMatchObject({
+      endpoint_id: 'guard-2', content: '检查这段内容', custom_prompt: '草稿提示词', block_threshold: 0.7,
+    })
+
+    await wrapper.setProps({
+      result: {
+        ok: true, endpoint_id: 'guard-2', endpoint_name: 'Custom', model: 'guard-model', response_format: 'custom_json',
+        latency_ms: 820, http_status: 0, raw_response: '{"risk":"unsafe"}', decision: 'critical', risk_level: 'critical', action: 'Block',
+        safety: 'Unsafe', reason: '越狱尝试', categories: ['jailbreak'], matched_scanners: ['jailbreak'],
+        scanner_scores: { jailbreak: 0.93 }, block_threshold: 0.7, flag_threshold: 0.4, truncated_input: false, message: '',
+      },
+    })
+    expect(wrapper.get('[data-test="preview-verdict"]').text()).toBe('admin.promptAudit.decisions.critical')
+    expect(wrapper.text()).toContain('越狱尝试')
+    expect(wrapper.text()).toContain('0.93')
+    expect(wrapper.text()).toContain('820')
+  })
+
+  // A rejected call is the common failure when tuning against a self-hosted
+  // endpoint, so the dialog must show the status, code and upstream body.
+  it('explains a rejected preview call instead of failing opaquely', async () => {
+    const wrapper = mount(PromptPreviewDialog, {
+      props: {
+        show: true, endpoints: [endpoint()], running: false,
+        result: {
+          ok: false, endpoint_id: 'guard-1', endpoint_name: 'Guard One', model: 'guard-model',
+          response_format: 'custom_json', latency_ms: 42, http_status: 400,
+          raw_response: '{"error":{"message":"unknown field: response_format"}}',
+          decision: 'unavailable', risk_level: 'low', action: 'Block', safety: '', reason: '',
+          categories: [], matched_scanners: [], scanner_scores: {}, block_threshold: 0.7, flag_threshold: 0.4,
+          truncated_input: false, error_code: 'prompt_guard_unavailable', message: 'rejected',
+        },
+        draftPrompt: '', blockThreshold: 0.7, flagThreshold: 0.4,
+      },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    expect(wrapper.get('[data-test="preview-verdict"]').text()).toBe('admin.promptAudit.moderation.previewFailed')
+    expect(wrapper.text()).toContain('HTTP 400')
+    expect(wrapper.text()).toContain('prompt_guard_unavailable')
+    expect(wrapper.text()).toContain('unknown field: response_format')
+  })
+
+  it('sends no prompt override when the draft checkbox is cleared', async () => {
+    const wrapper = mount(PromptPreviewDialog, {
+      props: {
+        show: true, endpoints: [endpoint()], running: false, result: null,
+        draftPrompt: '草稿提示词', blockThreshold: 0.7, flagThreshold: 0.4,
+      },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    await wrapper.get('[data-test="preview-content"]').setValue('检查这段内容')
+    await wrapper.get('input[type="checkbox"]').setValue(false)
+    await wrapper.get('[data-test="run-preview"]').trigger('click')
+    const payload = wrapper.emitted('run')?.at(-1)?.[0] as Record<string, unknown>
+    expect(payload.custom_prompt).toBeUndefined()
+    expect(payload.block_threshold).toBeUndefined()
+  })
+
+  it('supports group search, stale configured groups, nine scanners, and bounded worker inputs', async () => {
+    const draft: PromptAuditDraft = {
+      enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, blocking_fail_open: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
+      worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: false, group_ids: [1, 99],
+      endpoints: [endpoint()], config_version: 1, updated_at: '', updated_by: 0, change_summary: '',
+      custom_prompt: DEFAULT_PROMPT, default_custom_prompt: DEFAULT_PROMPT,
+      category_aware_custom_prompt: CATEGORY_PROMPT, block_threshold: 0.7, flag_threshold: 0.4,
+    }
+    const wrapper = mount(PolicyPanel, {
+      props: {
+        draft,
+        defaultCustomPrompt: DEFAULT_PROMPT,
+        categoryAwareCustomPrompt: CATEGORY_PROMPT,
+        groups: [{ id: 1, name: 'Alpha', platform: 'openai', status: 'active' }, { id: 2, name: 'Beta', platform: 'claude', status: 'inactive' }],
+      },
     })
     expect(wrapper.text()).toContain('99')
     expect(wrapper.findAll('input[type="checkbox"]').filter((input) => SCANNER_CATALOG.some((scanner) => input.attributes('aria-label') === `admin.promptAudit.scanners.${scanner.id}`))).toHaveLength(9)
@@ -84,9 +263,30 @@ describe('Prompt Audit components', () => {
     expect(emitted.worker_count).toBe(6)
   })
 
+  it('surfaces an unjudged request distinctly and shows why the audit failed', async () => {
+    const event: PromptAuditEvent = {
+      id: 2, job_id: 2, decision: 'unavailable', risk_level: 'low', action: 'Block', categories: [], matched_scanners: [],
+      scanner_scores: {}, scanner_evidence: {}, scanner_backend: 'unavailable', scanner_version: '', reason: '',
+      error_code: 'timeout', guard_endpoint_id: '', policy_id: 'priority', policy_version: 1, config_version: 1,
+      chunk_total: 0, latency_ms: 3000, issue_summaries: [], created_at: '2026-07-16T00:00:00Z',
+      snapshot: { request_id: 'req-2', user_id: 1, username: 'alice', user_email: 'alice@example.test', api_key_id: 2, api_key_name: 'alice-key', group_id: 3, group_name: 'Alpha', provider: 'openai', endpoint: '/v1/chat/completions', protocol: 'openai_chat', model: 'gpt-test', prompt_hash: 'b'.repeat(64), redacted_preview: 'redacted', full_prompt: '', prompt_length: 10, message_count: 1, stage: 'http' },
+    }
+    const wrapper = mount(EventWorkspace, {
+      props: { events: [event], total: 1, page: 1, pageSize: 20, filters: emptyEventFilters(), selectedIds: [], loading: false, error: '' },
+      global: { stubs: { Pagination: PaginationStub } },
+    })
+    expect(wrapper.text()).toContain('admin.promptAudit.decisions.unavailable')
+    expect(wrapper.text()).toContain('timeout')
+    // It must not read as a pass in a list scan.
+    expect(wrapper.html()).not.toContain('bg-emerald-100')
+    // The decision filter must be able to isolate these rows.
+    const options = wrapper.get('[aria-label="admin.promptAudit.events.decision"]').findAll('option')
+    expect(options.map((option) => option.attributes('value'))).toContain('unavailable')
+  })
+
   it('keeps identity fields separate, supports selection, and opens filter deletion from the toolbar', async () => {
     const event: PromptAuditEvent = {
-      id: 1, job_id: 1, decision: 'critical', risk_level: 'critical', action: 'Block', categories: ['pii'], matched_scanners: ['pii'], scanner_scores: { pii: 1 }, scanner_evidence: { pii: 'redacted' }, scanner_backend: 'qwen3guard-openai', scanner_version: '1', guard_endpoint_id: 'guard-1', policy_id: 'priority', policy_version: 1, config_version: 1, chunk_total: 1, latency_ms: 10, issue_summaries: [], created_at: '2026-07-16T00:00:00Z',
+      id: 1, job_id: 1, decision: 'critical', risk_level: 'critical', action: 'Block', categories: ['pii'], matched_scanners: ['pii'], scanner_scores: { pii: 1 }, scanner_evidence: { pii: 'redacted' }, scanner_backend: 'qwen3guard-openai', scanner_version: '1', reason: '', error_code: '', guard_endpoint_id: 'guard-1', policy_id: 'priority', policy_version: 1, config_version: 1, chunk_total: 1, latency_ms: 10, issue_summaries: [], created_at: '2026-07-16T00:00:00Z',
       snapshot: { request_id: 'req-1', user_id: 1, username: 'alice', user_email: 'alice@example.test', api_key_id: 2, api_key_name: 'alice-key', group_id: 3, group_name: 'Alpha', provider: 'openai', endpoint: '/v1/chat/completions', protocol: 'openai_chat', model: 'gpt-test', prompt_hash: 'a'.repeat(64), redacted_preview: 'redacted preview', full_prompt: 'full prompt text', prompt_length: 10, message_count: 1, stage: 'http' },
     }
     const wrapper = mount(EventWorkspace, {

@@ -1,0 +1,32 @@
+# =============================================================================
+# Sub2API Docker Compose - Build From Source (overlay)
+# =============================================================================
+# For a self-maintained fork: build the image from THIS working tree instead of
+# pulling a published one, so local changes actually ship.
+#
+# This file is an overlay — it only adds a build section and is always combined
+# with a base compose file:
+#
+#   docker compose -f docker-compose.yml       -f docker-compose.build.yml up -d --build
+#   docker compose -f docker-compose.local.yml -f docker-compose.build.yml up -d --build
+#
+# Set SUB2API_IMAGE=sub2api:local in .env so the built image is also the one
+# that runs. deploy/one-click.sh (or one-click.ps1) does all of this for you.
+#
+# Build context is the repository root because the Dockerfile needs backend/,
+# frontend/ and docs/legal/ together.
+# =============================================================================
+
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE:-sub2api:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        # Mirrors used by deploy/build_image.sh. Blank them out if you are not
+        # in mainland China and want the upstream defaults.
+        GOPROXY: ${BUILD_GOPROXY:-https://goproxy.cn,direct}
+        GOSUMDB: ${BUILD_GOSUMDB:-sum.golang.google.cn}
+        NPM_CONFIG_REGISTRY: ${BUILD_NPM_REGISTRY:-}
+        COMMIT: ${BUILD_COMMIT:-local}

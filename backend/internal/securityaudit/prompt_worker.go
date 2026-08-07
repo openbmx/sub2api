@@ -251,10 +251,35 @@ func (r *Runner) finishFailure(ctx context.Context, job *Job, err error) error {
 			return updateErr
 		}
 		_ = r.payload.Delete(ctx, job.ID)
+		// Terminal async failure means the request already reached upstream and
+		// will never be judged. Surface it in the events view rather than only in
+		// the jobs table, which the admin UI does not read.
+		r.recordTerminalFailure(ctx, job, code)
 		LogError(EventProcessFailed, mergeLogFields(baseFields, map[string]any{"attempts": job.Attempts, "max_attempts": job.MaxAttempts, "status": "failed", "error_code": code, "retryable": false}))
 	}
 	r.setLastError(code, err.Error())
 	return err
+}
+
+func (r *Runner) recordTerminalFailure(ctx context.Context, job *Job, code string) {
+	if r == nil || r.repo == nil || job == nil {
+		return
+	}
+	// Detached for the same reason as the blocking path: shutdown or a cancelled
+	// worker context must not silently drop the record of an unjudged request.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditFailureRecordTimeout)
+	defer cancel()
+	// Async auditing runs after the request was already served, so the outcome
+	// is always a pass-through regardless of the fail-open setting.
+	result := UnavailableResult(code, true, 0)
+	if _, err := r.repo.RecordJobFailure(ctx, job.ID, job.Snapshot.Redacted(), job.ConfigVersion, result); err != nil {
+		if r.metrics != nil {
+			r.metrics.IncRecordFailed()
+		}
+		LogWarn(EventResultRecordFailed, mergeLogFields(jobLogFields(job), map[string]any{
+			"decision": DecisionUnavailable, "error_code": "result_record_failed", "status": "failed",
+		}))
+	}
 }
 
 func (r *Runner) reclaimer(ctx context.Context) {

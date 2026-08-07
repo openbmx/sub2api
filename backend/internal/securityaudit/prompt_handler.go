@@ -16,6 +16,7 @@ type PromptAdminService interface {
 	GetConfig() (PublicConfig, error)
 	SaveConfig(context.Context, UpdateConfigRequest, int64) (PublicConfig, error)
 	Probe(context.Context, ProbeRequest) ProbeResult
+	Preview(context.Context, PreviewRequest) (*PreviewResult, error)
 	Runtime(context.Context) RuntimeSnapshot
 	ListEvents(context.Context, EventFilter, int, int) (*EventPage, error)
 	GetEvent(context.Context, int64) (*Event, error)
@@ -72,6 +73,33 @@ func (h *PromptAdminHandler) ProbeEndpoint(c *gin.Context) {
 	setPromptAdminAudit(c, status, result.ErrorCode, map[string]any{
 		"guard_endpoint_id": request.Endpoint.ID, "http_status": result.HTTPStatus,
 		"latency_ms": result.LatencyMS, "token_applied": result.TokenApplied, "retryable": result.Retryable,
+	})
+	response.Success(c, result)
+}
+
+func (h *PromptAdminHandler) PreviewAudit(c *gin.Context) {
+	var request PreviewRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		setPromptAdminAudit(c, "failed", "prompt_audit_invalid_preview_request", nil)
+		response.ErrorFrom(c, infraerrors.BadRequest("prompt_audit_invalid_preview_request", "试审请求无效"))
+		return
+	}
+	result, err := h.service.Preview(c.Request.Context(), request)
+	if err != nil {
+		setPromptAdminAudit(c, "failed", infraerrors.Reason(err), map[string]any{"guard_endpoint_id": request.EndpointID})
+		response.ErrorFrom(c, err)
+		return
+	}
+	status := "failed"
+	if result.OK {
+		status = "success"
+	}
+	// The audited text is deliberately absent from the audit trail: an admin may
+	// paste production prompts here while tuning, and this call does not persist
+	// an audit event the way a real request does.
+	setPromptAdminAudit(c, status, result.ErrorCode, map[string]any{
+		"guard_endpoint_id": result.EndpointID, "response_format": result.ResponseFormat,
+		"latency_ms": result.LatencyMS, "decision": string(result.Decision), "action": string(result.Action),
 	})
 	response.Success(c, result)
 }

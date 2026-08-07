@@ -19,8 +19,28 @@ const (
 	ErrorCodeConfigUnavailable     = "prompt_audit_config_unavailable"
 	ErrorCodeEncryptionKeyRequired = "prompt_audit_encryption_key_required"
 	ErrorCodeRequiresEnabled       = "prompt_guard_requires_audit_enabled"
+	ErrorCodeCustomPromptRequired  = "prompt_audit_custom_prompt_required"
+	ErrorCodeInvalidResponseFormat = "prompt_audit_invalid_response_format"
+	ErrorCodeInvalidThreshold      = "prompt_audit_invalid_threshold"
+	ErrorCodeCustomPromptTooLong   = "prompt_audit_custom_prompt_too_long"
+	ErrorCodeEndpointNotFound      = "prompt_audit_endpoint_not_found"
 
 	DefaultGuardModel = "sileader/qwen3guard:0.6b"
+)
+
+// Response formats decide how an audit endpoint is called and how its reply is
+// parsed. qwen3guard sends the raw chunk to a fine-tuned guard model whose
+// policy is baked into its weights; custom_json sends an administrator-authored
+// system prompt plus tag-wrapped content and expects a JSON verdict back.
+const (
+	ResponseFormatQwen3Guard = "qwen3guard"
+	ResponseFormatCustomJSON = "custom_json"
+
+	DefaultBlockThreshold = 0.7
+	DefaultFlagThreshold  = 0.4
+
+	MaxCustomPromptRunes = 20000
+	MaxAuditReasonRunes  = 300
 )
 
 type Mode string
@@ -47,6 +67,11 @@ const (
 	EventPass     EventDecision = "pass"
 	EventFlag     EventDecision = "flag"
 	EventCritical EventDecision = "critical"
+	// EventUnavailable records that the audit itself could not be completed
+	// (timeout, unreachable node, unparseable reply). The event's Action states
+	// what the gateway did with the request as a result: Allow when failing open,
+	// Block when failing closed.
+	EventUnavailable EventDecision = "unavailable"
 )
 
 type RiskLevel string
@@ -121,16 +146,21 @@ func (s PromptSnapshot) Redacted() PromptSnapshot {
 }
 
 type NormalizedResult struct {
-	Decision          EventDecision      `json:"decision"`
-	RiskLevel         RiskLevel          `json:"risk_level"`
-	Action            Action             `json:"action"`
-	Safety            string             `json:"safety"`
+	Decision  EventDecision `json:"decision"`
+	RiskLevel RiskLevel     `json:"risk_level"`
+	Action    Action        `json:"action"`
+	Safety    string        `json:"safety"`
+	// Reason carries the short natural-language justification returned by a
+	// custom_json audit model. It is empty for the qwen3guard backend, whose
+	// response contract has no free-text field.
+	Reason            string             `json:"reason"`
 	Categories        []string           `json:"categories"`
 	MatchedScanners   []string           `json:"matched_scanners"`
 	ScannerScores     map[string]float64 `json:"scanner_scores"`
 	ScannerEvidence   map[string]string  `json:"scanner_evidence"`
 	ScannerBackend    string             `json:"scanner_backend"`
 	ScannerVersion    string             `json:"scanner_version"`
+	ErrorCode         string             `json:"error_code,omitempty"`
 	GuardEndpointID   string             `json:"guard_endpoint_id"`
 	PolicyID          string             `json:"policy_id"`
 	PolicyVersion     int                `json:"policy_version"`

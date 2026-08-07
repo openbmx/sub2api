@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 type PromptService struct {
@@ -105,6 +107,13 @@ func (s *PromptService) EffectiveMode() Mode {
 		return ModeOff
 	}
 	return s.config.EffectiveMode()
+}
+
+func (s *PromptService) BlockingFailOpen() bool {
+	if s == nil || s.config == nil {
+		return false
+	}
+	return s.config.BlockingFailOpen()
 }
 
 func (s *PromptService) Enqueue(_ context.Context, req Request) error {
@@ -311,14 +320,159 @@ func modelsResponseReady(body []byte, model string) bool {
 	return false
 }
 
+// PreviewRequest runs one audit against a saved node so administrators can tune
+// a custom prompt against real text before enabling it. The node is always
+// resolved from stored configuration by ID: accepting an arbitrary base URL here
+// would let a saved credential be sent to a host of the caller's choosing.
+type PreviewRequest struct {
+	EndpointID string `json:"endpoint_id"`
+	Content    string `json:"content"`
+	// CustomPrompt and the thresholds override stored values for this call only,
+	// so an unsaved draft in the editor can be tried before committing it.
+	CustomPrompt   string  `json:"custom_prompt"`
+	BlockThreshold float64 `json:"block_threshold"`
+	FlagThreshold  float64 `json:"flag_threshold"`
+}
+
+type PreviewResult struct {
+	OK              bool               `json:"ok"`
+	EndpointID      string             `json:"endpoint_id"`
+	EndpointName    string             `json:"endpoint_name"`
+	Model           string             `json:"model"`
+	ResponseFormat  string             `json:"response_format"`
+	LatencyMS       int                `json:"latency_ms"`
+	HTTPStatus      int                `json:"http_status"`
+	RawResponse     string             `json:"raw_response"`
+	Decision        EventDecision      `json:"decision"`
+	RiskLevel       RiskLevel          `json:"risk_level"`
+	Action          Action             `json:"action"`
+	Safety          string             `json:"safety"`
+	Reason          string             `json:"reason"`
+	Categories      []string           `json:"categories"`
+	MatchedScanners []string           `json:"matched_scanners"`
+	ScannerScores   map[string]float64 `json:"scanner_scores"`
+	BlockThreshold  float64            `json:"block_threshold"`
+	FlagThreshold   float64            `json:"flag_threshold"`
+	TruncatedInput  bool               `json:"truncated_input"`
+	ErrorCode       string             `json:"error_code,omitempty"`
+	Message         string             `json:"message"`
+}
+
+func (s *PromptService) Preview(ctx context.Context, request PreviewRequest) (*PreviewResult, error) {
+	if s == nil || s.config == nil || s.scanner == nil {
+		return nil, infraerrors.ServiceUnavailable(ErrorCodeConfigUnavailable, "提示词审计配置暂不可用")
+	}
+	content := strings.TrimSpace(request.Content)
+	if content == "" {
+		return nil, infraerrors.BadRequest("prompt_audit_preview_content_required", "试审内容不能为空")
+	}
+	cfg, ok := s.config.Active()
+	if !ok {
+		return nil, infraerrors.ServiceUnavailable(ErrorCodeConfigUnavailable, "提示词审计配置暂不可用")
+	}
+	endpoint, found := findActiveEndpoint(cfg, request.EndpointID)
+	if !found {
+		return nil, infraerrors.BadRequest(ErrorCodeEndpointNotFound, "审计节点不存在，请先保存节点配置")
+	}
+	if endpoint.TokenInvalid {
+		return nil, infraerrors.BadRequest(ErrorCodeEndpointNotFound, "审计节点凭证无法解密，请重新填写 Token")
+	}
+	if prompt := strings.TrimSpace(request.CustomPrompt); prompt != "" {
+		endpoint.CustomPrompt = prompt
+	}
+	if request.BlockThreshold > 0 {
+		endpoint.BlockThreshold = request.BlockThreshold
+	}
+	if request.FlagThreshold > 0 {
+		endpoint.FlagThreshold = request.FlagThreshold
+	}
+	// Preview audits a single chunk rather than splitting, so oversized input is
+	// trimmed and the caller is told it was.
+	truncated := false
+	if limit := endpoint.InputLimit; limit > 0 && len([]rune(content)) > limit {
+		content = string([]rune(content)[:limit])
+		truncated = true
+	}
+	scanners := cfg.Scanners
+	if len(scanners) == 0 {
+		scanners = AllScannerIDs
+	}
+	blockThreshold, flagThreshold := endpoint.thresholds()
+	result := &PreviewResult{
+		EndpointID: endpoint.ID, EndpointName: endpoint.Name, Model: endpoint.Model,
+		ResponseFormat: endpoint.ResponseFormat, BlockThreshold: blockThreshold, FlagThreshold: flagThreshold,
+		TruncatedInput: truncated, Categories: []string{}, MatchedScanners: []string{},
+		ScannerScores: map[string]float64{},
+	}
+	started := s.clock.Now()
+	raw, verdict, err := s.scanner.ScanVerbose(ctx, endpoint, content, scanners)
+	result.LatencyMS = int(s.clock.Now().Sub(started).Milliseconds())
+	result.RawResponse = TrimRunes(strings.TrimSpace(raw), 4000)
+	if err != nil {
+		result.ErrorCode = guardErrorCode(err)
+		result.Message = "审计节点调用失败"
+		var guardErr *GuardError
+		if errors.As(err, &guardErr) {
+			result.HTTPStatus = guardErr.HTTPStatus
+			if guardErr.Timeout {
+				result.Message = "审计节点在超时时间内未返回，可调大该节点的超时或改用更快的模型"
+			}
+		}
+		if result.ErrorCode == ErrorCodeInvalidResponse {
+			result.Message = "审计模型返回的内容无法解析为判定结果，请检查提示词的输出格式要求"
+		} else if result.HTTPStatus >= 400 && result.HTTPStatus < 500 {
+			result.Message = "审计节点拒绝了该请求，请查看下方原始返回（部分服务端不接受 response_format 或 seed 字段）"
+		}
+		LogWarn(EventProbeFailed, map[string]any{
+			"guard_endpoint_id": endpoint.ID, "status": "preview_failed",
+			"error_code": result.ErrorCode, "latency_ms": result.LatencyMS, "http_status": result.HTTPStatus,
+		})
+		return result, nil
+	}
+	result.OK = true
+	result.Decision, result.RiskLevel, result.Action = verdict.Decision, verdict.RiskLevel, verdict.Action
+	result.Safety, result.Reason = verdict.Safety, verdict.Reason
+	result.Categories, result.MatchedScanners = verdict.Categories, verdict.MatchedScanners
+	result.ScannerScores = verdict.ScannerScores
+	result.Message = "试审完成"
+	return result, nil
+}
+
+func findActiveEndpoint(cfg ActiveConfig, id string) (ActiveEndpoint, bool) {
+	id = strings.TrimSpace(id)
+	for _, endpoint := range cfg.Endpoints {
+		if endpoint.ID == id {
+			return endpoint, true
+		}
+	}
+	// With exactly one node configured, an omitted ID is unambiguous.
+	if id == "" && len(cfg.Endpoints) == 1 {
+		return cfg.Endpoints[0], true
+	}
+	return ActiveEndpoint{}, false
+}
+
 func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoint, bool, error) {
 	baseURL, err := NormalizeBaseURL(input.BaseURL)
 	if err != nil {
 		return ActiveEndpoint{}, false, err
 	}
 	token := strings.TrimSpace(input.Token)
-	if token == "" {
-		if cfg, ok := s.config.Active(); ok {
+	// The moderation policy is global, so a probe must run under the same prompt
+	// and thresholds the gateway would use; otherwise "test node" silently
+	// validates a different contract than production traffic.
+	customPrompt, blockThreshold, flagThreshold := DefaultCustomAuditPrompt, float64(DefaultBlockThreshold), float64(DefaultFlagThreshold)
+	if cfg, ok := s.config.Active(); ok {
+		if strings.TrimSpace(cfg.CustomPrompt) != "" {
+			customPrompt = cfg.CustomPrompt
+		}
+		if cfg.BlockThreshold > 0 {
+			blockThreshold = cfg.BlockThreshold
+		}
+		if cfg.FlagThreshold > 0 {
+			flagThreshold = cfg.FlagThreshold
+		}
+		if token == "" {
 			for _, endpoint := range cfg.Endpoints {
 				if endpoint.ID != strings.TrimSpace(input.ID) {
 					continue
@@ -333,6 +487,10 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 			}
 		}
 	}
+	responseFormat := strings.TrimSpace(input.ResponseFormat)
+	if !isKnownResponseFormat(responseFormat) {
+		responseFormat = ResponseFormatQwen3Guard
+	}
 	model := strings.TrimSpace(input.Model)
 	if model == "" {
 		model = DefaultGuardModel
@@ -346,7 +504,8 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 		limit = DefaultInputLimit
 	}
 	storage := storageConfig{Enabled: false, Strategy: "priority", WorkerCount: DefaultWorkerCount, QueueCapacity: DefaultQueueCapacity, Scanners: append([]string(nil), AllScannerIDs...), AllGroups: true,
-		Endpoints: []StorageEndpoint{{ID: strings.TrimSpace(input.ID), Name: strings.TrimSpace(input.Name), Protocol: "openai_compatible", BaseURL: baseURL, Model: model, TimeoutMS: timeout, InputLimit: limit}}}
+		CustomPrompt: customPrompt, BlockThreshold: blockThreshold, FlagThreshold: flagThreshold,
+		Endpoints: []StorageEndpoint{{ID: strings.TrimSpace(input.ID), Name: strings.TrimSpace(input.Name), Protocol: "openai_compatible", BaseURL: baseURL, Model: model, TimeoutMS: timeout, InputLimit: limit, ResponseFormat: responseFormat}}}
 	if storage.Endpoints[0].ID == "" {
 		storage.Endpoints[0].ID = "probe"
 	}
@@ -356,7 +515,10 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 	if err := validateStorageConfig(storage); err != nil {
 		return ActiveEndpoint{}, false, err
 	}
-	return ActiveEndpoint{ID: storage.Endpoints[0].ID, Name: storage.Endpoints[0].Name, Protocol: "openai_compatible", BaseURL: baseURL, Model: model, Token: token, TimeoutMS: timeout, InputLimit: limit, Enabled: true}, token != "", nil
+	return ActiveEndpoint{ID: storage.Endpoints[0].ID, Name: storage.Endpoints[0].Name, Protocol: "openai_compatible",
+		BaseURL: baseURL, Model: model, Token: token, TimeoutMS: timeout, InputLimit: limit, Enabled: true,
+		ResponseFormat: responseFormat, CustomPrompt: customPrompt,
+		BlockThreshold: blockThreshold, FlagThreshold: flagThreshold}, token != "", nil
 }
 
 func (s *PromptService) finishProbe(id string, started time.Time, result ProbeResult) ProbeResult {

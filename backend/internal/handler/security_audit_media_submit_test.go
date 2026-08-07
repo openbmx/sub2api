@@ -29,6 +29,7 @@ type handlerPromptEngine struct {
 }
 
 func (e *handlerPromptEngine) EffectiveMode() securityaudit.Mode { return e.mode }
+func (e *handlerPromptEngine) BlockingFailOpen() bool            { return false }
 func (e *handlerPromptEngine) Enqueue(_ context.Context, req securityaudit.Request) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()

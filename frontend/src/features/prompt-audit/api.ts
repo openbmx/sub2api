@@ -11,6 +11,8 @@ import type {
   PromptEventPage,
   PromptProbeResult,
   PromptAuditEndpointDraft,
+  PromptPreviewRequest,
+  PromptPreviewResult,
 } from './types'
 import { eventFilterPayload, eventQueryParams } from './viewModel'
 
@@ -38,8 +40,14 @@ export async function probeEndpoint(endpoint: PromptAuditEndpointDraft): Promise
       timeout_ms: endpoint.timeout_ms,
       input_limit: endpoint.input_limit,
       enabled: endpoint.enabled,
+      response_format: endpoint.response_format,
     },
   })
+  return data
+}
+
+export async function previewAudit(payload: PromptPreviewRequest): Promise<PromptPreviewResult> {
+  const { data } = await apiClient.post<PromptPreviewResult>(`${basePath}/preview`, payload)
   return data
 }
 
@@ -107,6 +115,7 @@ export const promptAuditAPI = {
   getConfig,
   updateConfig,
   probeEndpoint,
+  previewAudit,
   getRuntime,
   listEvents,
   getEvent,

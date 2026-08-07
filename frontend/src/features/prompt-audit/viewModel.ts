@@ -8,6 +8,11 @@ import type {
 
 export const DEFAULT_GUARD_MODEL = 'sileader/qwen3guard:0.6b'
 
+export const DEFAULT_BLOCK_THRESHOLD = 0.7
+export const DEFAULT_FLAG_THRESHOLD = 0.4
+
+export const RESPONSE_FORMATS = [{ id: 'qwen3guard' }, { id: 'custom_json' }] as const
+
 export const SCANNER_CATALOG = [
   { id: 'violent', label: 'Violent' },
   { id: 'non_violent_illegal_acts', label: 'Non-violent Illegal Acts' },
@@ -54,7 +59,12 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
     token_status: 'missing',
     token: '',
     clear_token: false,
+    response_format: 'qwen3guard',
   }
+}
+
+export function hasEnabledCustomJSONEndpoint(draft: PromptAuditDraft | null): boolean {
+  return Boolean(draft?.endpoints.some((endpoint) => endpoint.enabled && endpoint.response_format === 'custom_json'))
 }
 
 export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRequest {
@@ -63,6 +73,7 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     enabled: draft.enabled,
     blocking_enabled: draft.enabled && draft.blocking_enabled,
     blocking_latest_turn_only: draft.blocking_latest_turn_only,
+    blocking_fail_open: draft.blocking_fail_open,
     store_pass_events: draft.store_pass_events,
     strategy: 'priority',
     worker_count: Number(draft.worker_count),
@@ -70,6 +81,9 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     scanners: [...draft.scanners],
     all_groups: draft.all_groups,
     group_ids: draft.all_groups ? [] : [...draft.group_ids].sort((a, b) => a - b),
+    custom_prompt: (draft.custom_prompt ?? '').trim(),
+    block_threshold: Number(draft.block_threshold) || DEFAULT_BLOCK_THRESHOLD,
+    flag_threshold: Number(draft.flag_threshold) || DEFAULT_FLAG_THRESHOLD,
     endpoints: draft.endpoints.map((endpoint) => ({
       id: endpoint.id.trim(),
       name: endpoint.name.trim(),
@@ -81,6 +95,7 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
       timeout_ms: Number(endpoint.timeout_ms),
       input_limit: Number(endpoint.input_limit),
       enabled: endpoint.enabled,
+      response_format: endpoint.response_format ?? 'qwen3guard',
     })),
   }
 }

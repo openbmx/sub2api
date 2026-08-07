@@ -194,14 +194,28 @@ type OpenAICompatibleScanner struct {
 func NewOpenAICompatibleScanner() *OpenAICompatibleScanner { return &OpenAICompatibleScanner{} }
 
 func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpoint, chunk string, enabledScanners []string) (*NormalizedResult, error) {
+	_, result, err := s.ScanVerbose(ctx, endpoint, chunk, enabledScanners)
+	return result, err
+}
+
+// ScanVerbose additionally returns the raw model reply. The admin preview tool
+// needs it to show what a custom prompt actually produced, especially when the
+// reply failed to parse and there is no result to inspect.
+func (s *OpenAICompatibleScanner) ScanVerbose(ctx context.Context, endpoint ActiveEndpoint, chunk string, enabledScanners []string) (string, *NormalizedResult, error) {
+	raw, result, err := s.scan(ctx, endpoint, chunk, enabledScanners)
+	return raw, result, err
+}
+
+func (s *OpenAICompatibleScanner) scan(ctx context.Context, endpoint ActiveEndpoint, chunk string, enabledScanners []string) (string, *NormalizedResult, error) {
 	client, err := s.clientFor(endpoint)
 	if err != nil {
-		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
 	}
 	requestURL, err := ChatCompletionsURL(endpoint.BaseURL)
 	if err != nil {
-		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
 	}
+	customJSON := endpoint.ResponseFormat == ResponseFormatCustomJSON
 	payload := map[string]any{
 		"model":       endpoint.Model,
 		"messages":    []map[string]string{{"role": "user", "content": chunk}},
@@ -209,13 +223,20 @@ func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpo
 		"max_tokens":  64,
 		"seed":        42,
 	}
+	if customJSON {
+		payload["messages"] = buildCustomJSONMessages(endpoint, chunk)
+		// A JSON verdict carries a free-text reason, which does not fit in the
+		// 64 tokens a bare qwen3guard label needs.
+		payload["max_tokens"] = customJSONMaxTokens
+		payload["response_format"] = map[string]string{"type": "json_object"}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if endpoint.Token != "" {
@@ -228,32 +249,44 @@ func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpo
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			timeout = true
 		}
-		return nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: true, Timeout: timeout, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: true, Timeout: timeout, Cause: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return nil, &GuardError{Code: ErrorCodeUnavailable, HTTPStatus: resp.StatusCode, Retryable: retryable}
+		// Return the upstream error body so the admin preview can explain a 4xx
+		// instead of showing an opaque failure. Some OpenAI-compatible servers
+		// reject fields the custom_json contract sends (response_format, seed),
+		// and the body is the only place that says so.
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxGuardErrorBodyBytes))
+		return strings.TrimSpace(string(errorBody)), nil,
+			&GuardError{Code: ErrorCodeUnavailable, HTTPStatus: resp.StatusCode, Retryable: retryable}
 	}
 	limited := io.LimitReader(resp.Body, maxGuardResponseBytes+1)
 	responseBody, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: true, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: true, Cause: err}
 	}
 	if int64(len(responseBody)) > maxGuardResponseBytes {
-		return nil, &GuardError{Code: ErrorCodeInvalidResponse}
+		return "", nil, &GuardError{Code: ErrorCodeInvalidResponse}
 	}
 	content, err := extractOpenAIContent(responseBody)
 	if err != nil {
-		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+		return "", nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+	}
+	if customJSON {
+		// The raw reply is returned even on parse failure so the preview tool can
+		// show an administrator exactly what their prompt produced.
+		result, parseErr := ParseCustomJSONVerdict(content, endpoint, enabledScanners)
+		return content, result, parseErr
 	}
 	result, err := ParseQwen3Guard(content, enabledScanners)
 	if err != nil {
-		return nil, err
+		return content, nil, err
 	}
 	result.GuardEndpointID = endpoint.ID
 	result.ScannerVersion = endpoint.Model
-	return result, nil
+	return content, result, nil
 }
 
 func (s *OpenAICompatibleScanner) clientFor(endpoint ActiveEndpoint) (*http.Client, error) {

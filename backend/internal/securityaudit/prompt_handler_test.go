@@ -27,6 +27,7 @@ type fakePromptAdminService struct {
 	deleteIDs    func(context.Context, []int64) (*DeleteResult, error)
 	preview      func(context.Context, EventFilter, int64) (*DeletePreview, error)
 	deleteFilter func(context.Context, DeleteByFilterRequest, int64) (*DeleteResult, error)
+	auditPreview func(context.Context, PreviewRequest) (*PreviewResult, error)
 }
 
 func (s *fakePromptAdminService) GetConfig() (PublicConfig, error) {
@@ -43,6 +44,12 @@ func (s *fakePromptAdminService) Probe(ctx context.Context, req ProbeRequest) Pr
 		return ProbeResult{}
 	}
 	return s.probe(ctx, req)
+}
+func (s *fakePromptAdminService) Preview(ctx context.Context, req PreviewRequest) (*PreviewResult, error) {
+	if s.auditPreview == nil {
+		return &PreviewResult{OK: true}, nil
+	}
+	return s.auditPreview(ctx, req)
 }
 func (s *fakePromptAdminService) Runtime(context.Context) RuntimeSnapshot { return s.runtime }
 func (s *fakePromptAdminService) ListEvents(ctx context.Context, filter EventFilter, page, pageSize int) (*EventPage, error) {

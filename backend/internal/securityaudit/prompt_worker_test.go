@@ -35,6 +35,8 @@ type fakeConfigStore struct {
 	active bool
 }
 
+func (s *fakeConfigStore) BlockingFailOpen() bool { return s.cfg.BlockingFailOpen }
+
 func (s *fakeConfigStore) Start(context.Context) error    { return nil }
 func (s *fakeConfigStore) Shutdown(context.Context) error { return nil }
 func (s *fakeConfigStore) Active() (ActiveConfig, bool)   { return cloneActiveConfig(s.cfg), s.active }
@@ -61,14 +63,17 @@ func (s *fakeConfigStore) Decrypt(value string) (string, error) { return value, 
 type fakeJobRepository struct {
 	mu sync.Mutex
 
-	trace       *[]string
-	createJob   *Job
-	createErr   error
-	publishErr  error
-	refreshErr  error
-	completeErr error
-	retryErr    error
-	failErr     error
+	trace            *[]string
+	createJob        *Job
+	createErr        error
+	publishErr       error
+	refreshErr       error
+	completeErr      error
+	retryErr         error
+	failErr          error
+	recordFailureErr error
+
+	failureEvents []*NormalizedResult
 
 	createdSnapshot PromptSnapshot
 	markedCode      string
@@ -152,6 +157,16 @@ func (r *fakeJobRepository) Complete(_ context.Context, _ *Job, result *Normaliz
 	}
 	r.eventCount++
 	return &Event{ID: 99, Decision: result.Decision}, nil
+}
+func (r *fakeJobRepository) RecordJobFailure(_ context.Context, _ int64, _ PromptSnapshot, _ int64, result *NormalizedResult) (*Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failureEvents = append(r.failureEvents, result)
+	if r.recordFailureErr != nil {
+		return nil, r.recordFailureErr
+	}
+	r.eventCount++
+	return &Event{ID: 98, Decision: result.Decision, ErrorCode: result.ErrorCode}, nil
 }
 func (r *fakeJobRepository) Retry(_ context.Context, _, _ int64, next time.Time, code, _ string) error {
 	r.mu.Lock()
@@ -576,11 +591,20 @@ func TestPromptAuditSyntheticAsyncBaseline(t *testing.T) {
 	require.Zero(t, knownBenignFindings)
 	require.Equal(t, 3, knownMaliciousBlocked)
 	require.Equal(t, 98, repo.completeCount)
-	require.Equal(t, 8, repo.eventCount, "store_pass_events=false only grows events for flag/block fixtures")
+	// 5 flag + 3 block, plus one event for each of the two terminal failures:
+	// a request that could not be judged is recorded rather than left invisible.
+	require.Equal(t, 10, repo.eventCount, "store_pass_events=false grows events for flag/block fixtures and for unjudged requests")
+	require.Len(t, repo.failureEvents, 2)
+	for _, failure := range repo.failureEvents {
+		require.Equal(t, EventUnavailable, failure.Decision)
+		// Async auditing runs after the response, so the request was passed through.
+		require.Equal(t, ActionAllow, failure.Action)
+		require.NotEmpty(t, failure.ErrorCode)
+	}
 	require.Positive(t, snapshot.LatencyP50MS)
 	require.LessOrEqual(t, snapshot.LatencyP50MS, snapshot.LatencyP95MS)
 	require.LessOrEqual(t, snapshot.LatencyP95MS, snapshot.LatencyP99MS)
-	t.Logf("synthetic async baseline: p50=%dms p95=%dms p99=%dms failure_rate=2%% false_positive_rate=0%% event_growth=8/100", snapshot.LatencyP50MS, snapshot.LatencyP95MS, snapshot.LatencyP99MS)
+	t.Logf("synthetic async baseline: p50=%dms p95=%dms p99=%dms failure_rate=2%% false_positive_rate=0%% event_growth=10/100", snapshot.LatencyP50MS, snapshot.LatencyP95MS, snapshot.LatencyP99MS)
 }
 
 func TestRequestCloneOwnsMutableInputs(t *testing.T) {

@@ -56,6 +56,14 @@
           <div class="min-w-0 xl:block">
             <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400 xl:hidden">{{ t('admin.promptAudit.pool.model') }}</p>
             <p class="truncate text-sm font-medium text-gray-700 dark:text-dark-200" :title="endpoint.model">{{ endpoint.model }}</p>
+            <span
+              class="mt-1 inline-block rounded-md px-1.5 py-0.5 text-[10px] font-medium"
+              :class="endpoint.response_format === 'custom_json'
+                ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300'
+                : 'bg-gray-100 text-gray-600 dark:bg-dark-800 dark:text-dark-300'"
+            >
+              {{ t(`admin.promptAudit.pool.responseFormats.${endpoint.response_format || 'qwen3guard'}`) }}
+            </span>
           </div>
 
           <div>
@@ -107,6 +115,17 @@
           <input v-model="editing.base_url" class="input w-full" required inputmode="url" :aria-label="t('admin.promptAudit.pool.baseUrl')" />
         </label>
         <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
+          <span>{{ t('admin.promptAudit.pool.responseFormat') }}</span>
+          <select v-model="editing.response_format" class="input w-full" :aria-label="t('admin.promptAudit.pool.responseFormat')">
+            <option v-for="format in RESPONSE_FORMATS" :key="format.id" :value="format.id">
+              {{ t(`admin.promptAudit.pool.responseFormats.${format.id}`) }}
+            </option>
+          </select>
+          <span class="block text-xs text-gray-500 dark:text-dark-400">
+            {{ t(`admin.promptAudit.pool.responseFormatHints.${editing.response_format || 'qwen3guard'}`) }}
+          </span>
+        </label>
+        <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
           <span>{{ t('admin.promptAudit.pool.apiKey') }}</span>
           <input v-model="editing.token" class="input w-full" type="password" autocomplete="new-password" :placeholder="editing.has_token ? (editing.token_status === 'invalid' ? t('admin.promptAudit.pool.reenterSecret') : t('admin.promptAudit.pool.keepSecret')) : ''" :aria-label="t('admin.promptAudit.pool.apiKey')" />
           <span class="block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.pool.secretHint') }}</span>
@@ -143,7 +162,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import type { PromptAuditEndpointDraft, PromptProbeResult } from '../types'
-import { cloneData, createDefaultEndpoint } from '../viewModel'
+import { cloneData, createDefaultEndpoint, RESPONSE_FORMATS } from '../viewModel'
 
 const props = defineProps<{
   endpoints: PromptAuditEndpointDraft[]
