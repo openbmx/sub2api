@@ -21,7 +21,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # GitHub raw content base URL
-GITHUB_RAW_URL="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy"
+# Must point at this fork: the compose files and .env.example fetched here have
+# to match the image this fork publishes.
+GITHUB_REPO="${GITHUB_REPO:-openbmx/sub2api}"
+GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/deploy"
 
 # Print colored message
 print_info() {

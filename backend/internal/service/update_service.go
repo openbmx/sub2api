@@ -30,7 +30,16 @@ var (
 const (
 	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+
+	// defaultGitHubRepo is this fork's own repository. The in-app updater and the
+	// rollback list must resolve against the releases that actually contain this
+	// fork's code — pointing them upstream would offer, download and install
+	// binaries built from someone else's tree.
+	defaultGitHubRepo = "openbmx/sub2api"
+
+	// updateGitHubRepoEnv overrides the repository at runtime, so renaming or
+	// moving the fork does not require a code change.
+	updateGitHubRepoEnv = "UPDATE_GITHUB_REPO"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -44,6 +53,16 @@ const (
 	// Fetch a few extra releases so filtering (current/newer/prerelease) still leaves enough candidates
 	rollbackFetchPageSize = 15
 )
+
+// updateGitHubRepo resolves the repository the updater checks. An operator may
+// point a deployment at a different fork without rebuilding; an unset or blank
+// value keeps this fork's own repository.
+func updateGitHubRepo() string {
+	if repo := strings.TrimSpace(os.Getenv(updateGitHubRepoEnv)); repo != "" {
+		return repo
+	}
+	return defaultGitHubRepo
+}
 
 // UpdateCache defines cache operations for update service
 type UpdateCache interface {
@@ -363,7 +382,7 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 // fetchRollbackCandidates fetches recent releases and keeps the newest
 // maxRollbackVersions entries strictly older than the current version.
 func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubRelease, error) {
-	releases, err := s.githubClient.FetchRecentReleases(ctx, githubRepo, rollbackFetchPageSize)
+	releases, err := s.githubClient.FetchRecentReleases(ctx, updateGitHubRepo(), rollbackFetchPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +419,7 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 }
 
 func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
-	release, err := s.githubClient.FetchLatestRelease(ctx, githubRepo)
+	release, err := s.githubClient.FetchLatestRelease(ctx, updateGitHubRepo())
 	if err != nil {
 		return nil, err
 	}
