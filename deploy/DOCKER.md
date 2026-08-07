@@ -2,11 +2,13 @@
 
 Sub2API is an AI API Gateway Platform for distributing and managing AI product subscription API quotas.
 
-## Deploying a fork (your own code)
+## Deploying this fork
 
-`weishaw/sub2api:latest` only contains upstream code. If you maintain a fork,
-you must run an image built from **your** tree — otherwise your changes are
-simply not in the running container.
+Every compose file here defaults to `ghcr.io/openbmx/sub2api:latest`, this
+fork's own CI build, so a plain `docker compose up -d` runs the code in this
+tree. The upstream image `weishaw/sub2api:latest` contains upstream code only —
+this fork's changes are simply not in it. Set `SUB2API_IMAGE` in `.env` to pin a
+version, run a locally built image, or deliberately fall back to upstream.
 
 ### One command
 
@@ -49,16 +51,18 @@ Then push a tag:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-CI publishes `ghcr.io/openbmx/sub2api:latest` (and `:0.1.0`). Point the stack at
-it and skip local builds:
-
-```bash
-# .env
-SUB2API_IMAGE=ghcr.io/openbmx/sub2api:latest
-```
+CI publishes `ghcr.io/openbmx/sub2api:latest` (and `:0.1.0`). That is already the
+compose default, so pulling it needs no `.env` change at all:
 
 ```bash
 docker compose -f docker-compose.yml pull && docker compose -f docker-compose.yml up -d
+```
+
+Pin an exact version when you want reproducible rollouts:
+
+```bash
+# .env
+SUB2API_IMAGE=ghcr.io/openbmx/sub2api:0.1.172-openbmx.1
 ```
 
 No DockerHub account is needed: the workflow passes
@@ -99,7 +103,7 @@ docker run -d \
   -p 8080:8080 \
   -e DATABASE_URL="postgres://user:pass@host:5432/sub2api" \
   -e REDIS_URL="redis://host:6379" \
-  weishaw/sub2api:latest
+  ghcr.io/openbmx/sub2api:latest
 ```
 
 ## Docker Compose
@@ -109,7 +113,7 @@ version: '3.8'
 
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ghcr.io/openbmx/sub2api:latest
     ports:
       - "8080:8080"
     environment:
@@ -161,5 +165,15 @@ volumes:
 
 ## Links
 
-- [GitHub Repository](https://github.com/weishaw/sub2api)
-- [Documentation](https://github.com/weishaw/sub2api#readme)
+- [GitHub Repository](https://github.com/openbmx/sub2api)
+- [Documentation](https://github.com/openbmx/sub2api#readme)
+- [Upstream project](https://github.com/Wei-Shaw/sub2api) — this fork tracks it
+
+## What still points upstream, on purpose
+
+`pricing.remote_url` / `pricing.hash_url` (see `config.example.yaml`, defaults in
+`backend/internal/config/config.go`) fetch from `Wei-Shaw/model-price-repo`. That
+is a **pricing data feed**, not code: repointing it would mean standing up and
+continuously syncing your own price repository for no functional gain. Everything
+that resolves *code* — the in-app updater, the rollback list, the install and
+deploy scripts, the images in every compose file — resolves against this fork.

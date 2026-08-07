@@ -24,9 +24,9 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    # Override with SUB2API_IMAGE in .env to run a fork's own build (locally
-    # built, or published by the fork's own release workflow).
-    image: ${SUB2API_IMAGE:-weishaw/sub2api:latest}
+    # Defaults to this fork's own CI build. Override with SUB2API_IMAGE in .env
+    # to pin a version, run a locally built image, or fall back to upstream.
+    image: ${SUB2API_IMAGE:-ghcr.io/openbmx/sub2api:latest}
     container_name: sub2api
     restart: unless-stopped
     security_opt:

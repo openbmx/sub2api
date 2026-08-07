@@ -651,9 +651,13 @@ import {
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
 
-const GITHUB_REPO = 'Wei-Shaw/sub2api'
-// Docker Hub image published by CI (tags carry no "v" prefix, e.g. weishaw/sub2api:0.1.146)
-const DOCKER_IMAGE = 'weishaw/sub2api'
+// This fork's own repository. The rollback commands below must resolve against
+// the releases that actually contain this fork's code — pointing them upstream
+// would hand the operator a command that installs someone else's build.
+const GITHUB_REPO = 'openbmx/sub2api'
+// GHCR image published by CI (tags carry no "v" prefix, e.g. ghcr.io/openbmx/sub2api:0.1.172-openbmx.1).
+// This fork publishes to GHCR only, not Docker Hub.
+const DOCKER_IMAGE = 'ghcr.io/openbmx/sub2api'
 
 const { t } = useI18n()
 

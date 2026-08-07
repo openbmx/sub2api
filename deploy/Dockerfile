@@ -84,8 +84,8 @@ RUN VERSION_VALUE="${VERSION}" && \
 FROM ${ALPINE_IMAGE}
 
 # Labels
-LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
-LABEL description="Sub2API - AI API Gateway Platform"
+LABEL maintainer="openbmx <github.com/openbmx>"
+LABEL description="Sub2API - AI API Gateway Platform (openbmx fork)"
 LABEL org.opencontainers.image.source="https://github.com/openbmx/sub2api"
 
 # Install runtime dependencies
