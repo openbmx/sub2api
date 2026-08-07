@@ -655,7 +655,7 @@ import Icon from '@/components/icons/Icon.vue'
 // the releases that actually contain this fork's code — pointing them upstream
 // would hand the operator a command that installs someone else's build.
 const GITHUB_REPO = 'openbmx/sub2api'
-// GHCR image published by CI (tags carry no "v" prefix, e.g. ghcr.io/openbmx/sub2api:0.1.172-openbmx.1).
+// GHCR image published by CI (tags carry no "v" prefix, e.g. ghcr.io/openbmx/sub2api:1.0.1).
 // This fork publishes to GHCR only, not Docker Hub.
 const DOCKER_IMAGE = 'ghcr.io/openbmx/sub2api'
 

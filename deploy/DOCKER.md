@@ -62,7 +62,7 @@ Pin an exact version when you want reproducible rollouts:
 
 ```bash
 # .env
-SUB2API_IMAGE=ghcr.io/openbmx/sub2api:0.1.172-openbmx.1
+SUB2API_IMAGE=ghcr.io/openbmx/sub2api:1.0.1
 ```
 
 No DockerHub account is needed: the workflow passes
@@ -76,11 +76,22 @@ Variables). Every tag push then builds only the x86_64 GHCR image and skips the
 binary artifacts. You can also enable it per-run from the Actions tab via
 *Run workflow* → `simple_release`.
 
-#### Keeping the fork current
+#### Versioning
 
-Upstream tags will conflict with your own version numbers if you merge them, so
-use a distinct scheme for your releases (for example `v0.1.0-openbmx`) or track
-upstream on a branch and tag only your own merges.
+This fork keeps its own version line, starting at **`v1.0.1`**, independent of
+upstream's `v0.1.x`. Merging an upstream tag therefore never collides with a tag
+of ours.
+
+**Tags must be plain `vX.Y.Z` — no suffix.** The in-app updater compares versions
+with `parseVersion` in `backend/internal/service/update_service.go`, which splits
+on `.` and `strconv.Atoi`s the first three fields, silently keeping `0` when a
+field is not a number. A tag like `v0.1.172-openbmx.1` splits into
+`["0","1","172-openbmx","1"]`, so the third field fails to parse and the whole
+version collapses to `0.1.0`. Two different suffixed releases then compare equal
+and the updater reports "up to date" forever. A plain `1.0.1` parses correctly.
+
+When you merge upstream, bump your own patch/minor — upstream's number does not
+enter your version at all.
 
 ### Manual build
 
