@@ -18,8 +18,8 @@ const (
 	MaxWorkerCount       = 32
 	DefaultQueueCapacity = 32768
 	MaxQueueCapacity     = 100000
-	DefaultTimeoutMS = 3000
-	MinTimeoutMS     = 100
+	DefaultTimeoutMS     = 3000
+	MinTimeoutMS         = 100
 	// MaxTimeoutMS bounds the budget for a whole evaluation, not one upstream
 	// call: PromptGuard.Evaluate derives a single context from it and every
 	// chunk shares it. A one-shot scan of a large transcript on a reasoning
@@ -34,8 +34,8 @@ const (
 	// boundary is evaluated as two innocuous halves. Raised so an operator can
 	// set input_limit above the largest transcript they expect and get exactly
 	// one upstream call. Defaults are unchanged.
-	MaxInputLimit = 1000000
-	DefaultPayloadTTL    = 30 * time.Minute
+	MaxInputLimit     = 1000000
+	DefaultPayloadTTL = 30 * time.Minute
 )
 
 type SecretEncryptor interface {
