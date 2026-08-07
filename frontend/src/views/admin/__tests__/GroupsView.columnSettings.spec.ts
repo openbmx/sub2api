@@ -46,6 +46,8 @@ const messages: Record<string, string> = {
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     groups: {
+      // GroupsView probes this on mount; without it the mount rejects.
+      getLiveCapability: vi.fn().mockResolvedValue({ supported: false }),
       list: listGroups,
       getAll: getAllGroups,
       getModelsListCandidates,

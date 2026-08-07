@@ -82,7 +82,7 @@ assert_unsafe_invocation_rejected() {
 }
 
 assert_unsafe_invocation_rejected non-api -s \
-    "https://github.com/Wei-Shaw/sub2api/releases/download/v1/asset"
+    "https://github.com/openbmx/sub2api/releases/download/v1/asset"
 assert_unsafe_invocation_rejected mixed-host -s \
     "https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest" \
     "https://example.com/collect"

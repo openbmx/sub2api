@@ -67,7 +67,7 @@ export async function getRollbackVersions(): Promise<{ versions: RollbackVersion
  * abort the request mid-download (#4504), so these calls wait as long as the
  * backend allows (15 minutes server-side).
  */
-const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+export const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
 
 /**
  * Perform system update

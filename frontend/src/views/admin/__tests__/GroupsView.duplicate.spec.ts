@@ -11,6 +11,7 @@ const {
   getModelsListCandidates,
   getUsageSummary,
   getCapacitySummary,
+  getLiveCapability,
   showSuccess,
   showError
 } = vi.hoisted(() => ({
@@ -19,6 +20,10 @@ const {
   getModelsListCandidates: vi.fn(),
   getUsageSummary: vi.fn(),
   getCapacitySummary: vi.fn(),
+  // Hoisted rather than created inline in the mock factory: afterEach runs
+  // restoreAllMocks, which would strip an inline resolved value and make the
+  // mount-time probe return undefined for every test after the first.
+  getLiveCapability: vi.fn(),
   showSuccess: vi.fn(),
   showError: vi.fn()
 }))
@@ -26,6 +31,8 @@ const {
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     groups: {
+      // GroupsView probes this on mount; without it the mount rejects.
+      getLiveCapability,
       list: listGroups,
       duplicate: duplicateGroup,
       getModelsListCandidates,
@@ -166,11 +173,13 @@ describe('GroupsView duplicate action', () => {
       getModelsListCandidates,
       getUsageSummary,
       getCapacitySummary,
+      getLiveCapability,
       showSuccess,
       showError
     ]) {
       fn.mockReset()
     }
+    getLiveCapability.mockResolvedValue({ supported: false })
 
     listGroups.mockResolvedValue({
       items: [sourceGroup],
