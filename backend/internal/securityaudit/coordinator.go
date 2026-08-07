@@ -70,8 +70,11 @@ func (c *Coordinator) checkBlocking(ctx context.Context, req Request) Decision {
 		result, err := c.prompt.Evaluate(ctx, req.Clone())
 		if err != nil {
 			var guardErr *GuardError
-			if errors.As(err, &guardErr) && guardErr.Code == ErrorCodeInvalidResponse {
-				prompt = unavailablePromptDecision(ErrorCodeInvalidResponse)
+			if errors.As(err, &guardErr) &&
+				(guardErr.Code == ErrorCodeInvalidResponse || guardErr.Code == ErrorCodeOutputTruncated) {
+				// Preserve the specific code: "truncated" tells the operator to
+				// raise max_tokens, "invalid" to fix the prompt contract.
+				prompt = unavailablePromptDecision(guardErr.Code)
 				return
 			}
 			prompt = unavailablePromptDecision(ErrorCodeUnavailable)

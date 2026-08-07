@@ -98,7 +98,9 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 				"latency_ms": g.clock.Now().Sub(chunkStarted).Milliseconds(), "error_code": code, "status": "failed",
 			}))
 			kind := DecisionUnavailable
-			if code == ErrorCodeInvalidResponse {
+			// A truncated reply is a malformed verdict like any other; only the
+			// remedy differs, which the error code already carries.
+			if code == ErrorCodeInvalidResponse || code == ErrorCodeOutputTruncated {
 				kind = DecisionInvalid
 			}
 			if g.metrics != nil {

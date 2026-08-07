@@ -12,9 +12,15 @@ const (
 	ConfigInvalidationChannel = "sub2api:prompt_guard:config:invalidate"
 	PayloadKeyPrefix          = "sub2api:prompt_audit:payload:"
 
-	ErrorCodeBlocked               = "prompt_guard_blocked"
-	ErrorCodeUnavailable           = "prompt_guard_unavailable"
-	ErrorCodeInvalidResponse       = "prompt_guard_invalid_response"
+	ErrorCodeBlocked         = "prompt_guard_blocked"
+	ErrorCodeUnavailable     = "prompt_guard_unavailable"
+	ErrorCodeInvalidResponse = "prompt_guard_invalid_response"
+	// ErrorCodeOutputTruncated separates "the model ran out of completion
+	// budget before emitting a verdict" from a genuinely malformed reply. Both
+	// used to surface as prompt_guard_invalid_response, which sent operators
+	// hunting for a prompt bug when the real fix is more max_tokens or a model
+	// that does not spend the budget on reasoning.
+	ErrorCodeOutputTruncated       = "prompt_guard_output_truncated"
 	ErrorCodeConfigConflict        = "prompt_audit_config_conflict"
 	ErrorCodeConfigUnavailable     = "prompt_audit_config_unavailable"
 	ErrorCodeEncryptionKeyRequired = "prompt_audit_encryption_key_required"

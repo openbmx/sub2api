@@ -99,7 +99,13 @@ const (
 
 	customJSONScannerBackend = "custom-json-openai"
 	customJSONPolicyID       = "custom_json"
-	customJSONMaxTokens      = 512
+	// customJSONMaxTokens caps the completion, and on a reasoning model the
+	// chain of thought is billed against that same budget before any content is
+	// emitted. At 512 a moderately long deliberation consumed the whole
+	// allowance and the reply came back with an empty content field, which
+	// surfaced as a bare "invalid response". The verdict JSON itself is well
+	// under 100 tokens; the headroom exists purely so reasoning can finish.
+	customJSONMaxTokens = 4096
 
 	// maxGuardErrorBodyBytes bounds how much of a non-2xx upstream body is kept
 	// for admin diagnosis. Small on purpose: it is shown in the UI, not stored.

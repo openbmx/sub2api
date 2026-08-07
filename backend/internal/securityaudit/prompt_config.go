@@ -18,12 +18,23 @@ const (
 	MaxWorkerCount       = 32
 	DefaultQueueCapacity = 32768
 	MaxQueueCapacity     = 100000
-	DefaultTimeoutMS     = 3000
-	MinTimeoutMS         = 100
-	MaxTimeoutMS         = 30000
-	DefaultInputLimit    = 4000
-	MinInputLimit        = 128
-	MaxInputLimit        = 100000
+	DefaultTimeoutMS = 3000
+	MinTimeoutMS     = 100
+	// MaxTimeoutMS bounds the budget for a whole evaluation, not one upstream
+	// call: PromptGuard.Evaluate derives a single context from it and every
+	// chunk shares it. A one-shot scan of a large transcript on a reasoning
+	// model needs far more than the previous 30s ceiling.
+	MaxTimeoutMS      = 120000
+	DefaultInputLimit = 4000
+	MinInputLimit     = 128
+	// MaxInputLimit is the per-chunk character ceiling. The 4000 default suits
+	// small classifiers such as qwen3guard; large-context audit models can take
+	// a whole transcript in one call, which is both faster than N sequential
+	// chunks and safer — chunking splits the text, so an attack straddling a
+	// boundary is evaluated as two innocuous halves. Raised so an operator can
+	// set input_limit above the largest transcript they expect and get exactly
+	// one upstream call. Defaults are unchanged.
+	MaxInputLimit = 1000000
 	DefaultPayloadTTL    = 30 * time.Minute
 )
 

@@ -272,7 +272,11 @@ func (s *OpenAICompatibleScanner) scan(ctx context.Context, endpoint ActiveEndpo
 	}
 	content, err := extractOpenAIContent(responseBody)
 	if err != nil {
-		return "", nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+		code := ErrorCodeInvalidResponse
+		if errors.Is(err, errGuardOutputTruncated) {
+			code = ErrorCodeOutputTruncated
+		}
+		return "", nil, &GuardError{Code: code, Cause: err}
 	}
 	if customJSON {
 		// The raw reply is returned even on parse failure so the preview tool can
@@ -312,18 +316,48 @@ func (s *OpenAICompatibleScanner) clientFor(endpoint ActiveEndpoint) (*http.Clie
 	return actualClient, nil
 }
 
+// errGuardOutputTruncated marks a reply whose completion budget ran out before
+// the model emitted a verdict, so callers can report ErrorCodeOutputTruncated
+// instead of a generic invalid-response.
+var errGuardOutputTruncated = errors.New("prompt guard response truncated by max_tokens")
+
 func extractOpenAIContent(body []byte) (string, error) {
 	var response struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content any `json:"content"`
+				// ReasoningContent carries a reasoning model's chain of thought.
+				// Such models emit it before content and bill both against
+				// max_tokens, so a tight budget yields an empty content with the
+				// verdict — if it was reached at all — stranded here.
+				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil || len(response.Choices) == 0 {
 		return "", errors.New("prompt guard response envelope invalid")
 	}
-	content := response.Choices[0].Message.Content
+	choice := response.Choices[0]
+	text, err := openAIContentText(choice.Message.Content)
+	if err == nil {
+		return text, nil
+	}
+	// Content is unusable. A reasoning model that was cut short may still have
+	// stated its verdict mid-thought, and ParseCustomJSONVerdict only needs to
+	// find the first JSON object, so the chain of thought is worth one look.
+	if reasoning := strings.TrimSpace(choice.Message.ReasoningContent); reasoning != "" {
+		if _, ok := extractFirstJSONObject(stripCodeFences(reasoning)); ok {
+			return reasoning, nil
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "length") {
+		return "", errGuardOutputTruncated
+	}
+	return "", err
+}
+
+func openAIContentText(content any) (string, error) {
 	switch typed := content.(type) {
 	case string:
 		if strings.TrimSpace(typed) == "" {

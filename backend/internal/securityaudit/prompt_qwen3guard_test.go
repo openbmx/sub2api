@@ -96,6 +96,39 @@ func TestExtractOpenAIContentSupportsStringAndTextBlocks(t *testing.T) {
 	}
 }
 
+// A reasoning model bills its chain of thought against max_tokens and emits it
+// before content, so a tight budget leaves content empty. Recovering a verdict
+// stranded in reasoning_content, and naming the truncation when there is none,
+// is what keeps that from reading as a prompt bug.
+func TestExtractOpenAIContentHandlesReasoningModels(t *testing.T) {
+	t.Run("falls back to a verdict stranded in reasoning_content", func(t *testing.T) {
+		body := `{"choices":[{"finish_reason":"stop","message":{"content":"","reasoning_content":"weighing it up... {\"confidence\":0.9,\"reason\":\"unauthorized access\"}"}}]}`
+		content, err := extractOpenAIContent([]byte(body))
+		require.NoError(t, err)
+		require.Contains(t, content, `"confidence":0.9`)
+	})
+
+	t.Run("prefers content when both are present", func(t *testing.T) {
+		body := `{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.1}","reasoning_content":"{\"confidence\":0.9}"}}]}`
+		content, err := extractOpenAIContent([]byte(body))
+		require.NoError(t, err)
+		require.Equal(t, `{"confidence":0.1}`, content)
+	})
+
+	t.Run("reports truncation when the budget ran out with nothing usable", func(t *testing.T) {
+		body := `{"choices":[{"finish_reason":"length","message":{"content":"","reasoning_content":"still deliberating, no verdict yet"}}]}`
+		_, err := extractOpenAIContent([]byte(body))
+		require.ErrorIs(t, err, errGuardOutputTruncated)
+	})
+
+	t.Run("stays a plain invalid response when nothing was truncated", func(t *testing.T) {
+		body := `{"choices":[{"finish_reason":"stop","message":{"content":"","reasoning_content":"no verdict here"}}]}`
+		_, err := extractOpenAIContent([]byte(body))
+		require.Error(t, err)
+		require.NotErrorIs(t, err, errGuardOutputTruncated)
+	})
+}
+
 func TestAggregateRequiresEveryResult(t *testing.T) {
 	_, err := AggregateResults([]*NormalizedResult{{Decision: EventPass, Action: ActionAllow}, nil}, 0)
 	require.Error(t, err)
