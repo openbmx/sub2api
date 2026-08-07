@@ -14,6 +14,7 @@ vi.mock('../client', () => ({
 
 import {
   getRollbackVersions,
+  performUpdate,
   rollback,
   UPDATE_REQUEST_TIMEOUT_MS,
   type RollbackVersionInfo,
@@ -63,6 +64,18 @@ describe('admin system rollback API', () => {
 
     expect(post).toHaveBeenCalledWith(
       '/admin/system/rollback',
+      undefined,
+      expect.objectContaining({ timeout: UPDATE_REQUEST_TIMEOUT_MS }),
+    )
+  })
+
+  it('performUpdate opts out of the global axios timeout (#4504)', async () => {
+    post.mockResolvedValue({ data: { message: 'ok', need_restart: true } })
+
+    await performUpdate()
+
+    expect(post).toHaveBeenCalledWith(
+      '/admin/system/update',
       undefined,
       expect.objectContaining({ timeout: UPDATE_REQUEST_TIMEOUT_MS }),
     )
