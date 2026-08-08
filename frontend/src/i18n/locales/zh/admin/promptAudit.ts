@@ -3,6 +3,7 @@ export default {
     title: '提示词审计',
     description: '通过 OpenAI 兼容 Qwen3Guard 节点异步复核或同步阻止用户输入；事件的完整提示词会入库保存，仅供管理员复核。',
     configVersion: '配置版本 v{version}',
+    lastModified: '最后修改时间',
     tabs: { config: '配置', events: '事件' },
     actions: { refresh: '刷新运行态', retry: '重试', Allow: '放行', Warn: '警告', Block: '阻止' },
     common: { actions: '操作', never: '从未' },
@@ -35,7 +36,9 @@ export default {
     runtime: {
       title: '运行概览',
       description: '显示服务端当前生效状态；未保存的草稿不会改变这些数值。',
-      process: '进程状态', mode: '生效模式', version: '生效 / 期望版本', workers: '活动 / 总 Worker',
+      process: '进程状态', mode: '生效模式', version: '更新次数',
+      versionLagging: '运行时仍停留在第 {active} 次，最近一次保存尚未生效',
+      workers: '活动 / 总 Worker',
       queue: '活动任务 / 容量', dependencies: '依赖', guardMetrics: '同步 Guard 指标', latest: '最近处理与错误',
       queueBreakdown: 'queued {queued} · processing {processing} · retry {retry} · done {done} · failed {failed}',
       deliveryTotals: '累计入队 {enqueued} · 丢弃 {dropped} · 处理 {processed} · 失败 {failed}',

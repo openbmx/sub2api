@@ -13,6 +13,21 @@ import (
 
 const securityAuditCompletedContextKey = "sub2api.security_audit.completed"
 
+// securityAuditBlockedContextKey marks a request the audit deliberately
+// rejected, so ops error classification can separate a policy decision from a
+// service fault. Without it a block lands in the SLA error bucket and reads as
+// downtime the platform caused.
+const securityAuditBlockedContextKey = "sub2api.security_audit.blocked"
+
+// hasSecurityAuditBlock reports whether the prompt audit rejected this request.
+func hasSecurityAuditBlock(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	blocked, exists := c.Get(securityAuditBlockedContextKey)
+	return exists && blocked == true
+}
+
 // cachesSecurityAuditCompletion reports whether a successful audit may be
 // reused for the rest of the gin request. WebSocket turns share one Context
 // across many response.create frames and must be audited independently.
@@ -85,6 +100,12 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			zap.Int("body_bytes", len(body)))
 	}
 	decision := coordinator.Check(c.Request.Context(), request)
+	if decision.Kind == securityaudit.DecisionBlock {
+		// Mark the rejection so ops classification can tell a deliberate policy
+		// block from a service failure. Matching on the message is not an
+		// option: the block text is administrator-configurable.
+		c.Set(securityAuditBlockedContextKey, true)
+	}
 	if decision.AllowNextStage && cacheCompletion {
 		c.Set(securityAuditCompletedContextKey, true)
 	}

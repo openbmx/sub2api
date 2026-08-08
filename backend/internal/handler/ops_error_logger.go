@@ -1563,6 +1563,19 @@ func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status i
 	localClientAuthError := !upstreamError && phase == "auth" && isOpsClientAuthError(code, msg)
 	localBusinessLimited := !upstreamError && classifyOpsIsBusinessLimited(errType, phase, code, status, message, localClientAuthError)
 	isBusinessLimited = routingCapacityLimited || (clientBusinessLimited && !upstreamError) || localBusinessLimited
+	// A prompt the audit rejected is a policy outcome, not a fault: the gateway
+	// did exactly what it was configured to do. Classifying it as "request"
+	// makes the owner the client and the source client_request, and marking it
+	// business-limited keeps it out of the SLA numerator alongside quota and
+	// billing refusals. An audit that could not run (503) is deliberately left
+	// alone — that one really is degraded service.
+	if hasSecurityAuditBlock(c) && !upstreamError {
+		phase = "request"
+		isBusinessLimited = true
+		errorOwner = classifyOpsErrorOwner(phase, message)
+		errorSource = classifyOpsErrorSource(phase, message)
+		return phase, isBusinessLimited, errorOwner, errorSource
+	}
 	errorOwner = classifyOpsErrorOwner(phase, message)
 	errorSource = classifyOpsErrorSource(phase, message)
 	return phase, isBusinessLimited, errorOwner, errorSource

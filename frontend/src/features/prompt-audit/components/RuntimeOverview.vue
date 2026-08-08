@@ -28,6 +28,7 @@
             <span v-if="item.dot" class="h-2 w-2 shrink-0 rounded-full" :class="item.dot" />
             <span class="min-w-0 truncate">{{ item.value }}</span>
           </dd>
+          <p v-if="item.hint" class="mt-1 text-[11px] leading-tight text-amber-600 dark:text-amber-400">{{ item.hint }}</p>
         </div>
       </dl>
 
@@ -80,13 +81,30 @@ const props = defineProps<{ runtime: PromptAuditRuntime | null; loading: boolean
 defineEmits<{ (event: 'refresh'): void }>()
 const { t, locale } = useI18n()
 
+// The runtime reloads config asynchronously, so the two counters differ only
+// when the last save failed to activate. That is worth shouting about; showing
+// both numbers side by side every time is not.
+const configVersionLagging = computed(
+  () => Boolean(props.runtime) && props.runtime!.active_config_version !== props.runtime!.expected_config_version,
+)
+
 const statusItems = computed(() => {
   const runtime = props.runtime
   if (!runtime) return []
   return [
     { label: t('admin.promptAudit.runtime.process'), value: t(`admin.promptAudit.status.${runtime.process_status}`), dot: statusDot(runtime.process_status) },
     { label: t('admin.promptAudit.runtime.mode'), value: t(`admin.promptAudit.mode.${runtime.effective_mode}`) },
-    { label: t('admin.promptAudit.runtime.version'), value: `${runtime.active_config_version} / ${runtime.expected_config_version}` },
+    // Show the save counter plainly. The active/expected pair only matters
+    // when they diverge, which means the runtime failed to pick up the last
+    // save — surfaced below as an explicit warning rather than as two numbers
+    // an operator has to compare on every glance.
+    {
+      label: t('admin.promptAudit.runtime.version'),
+      value: String(runtime.expected_config_version),
+      hint: configVersionLagging.value
+        ? t('admin.promptAudit.runtime.versionLagging', { active: runtime.active_config_version })
+        : '',
+    },
     { label: t('admin.promptAudit.runtime.workers'), value: `${runtime.worker_active} / ${runtime.worker_total}` },
     { label: t('admin.promptAudit.runtime.queue'), value: `${runtime.queue.active} / ${runtime.queue_capacity}` },
     { label: t('admin.promptAudit.runtime.dependencies'), value: `DB ${runtime.database_status} · Redis ${runtime.redis_status}` },

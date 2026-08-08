@@ -3,6 +3,7 @@ export default {
     title: 'Prompt Audit',
     description: 'Review user input asynchronously or block it synchronously through OpenAI-compatible Qwen3Guard nodes. Full prompts are stored with events for admin review.',
     configVersion: 'Config version v{version}',
+    lastModified: 'Last modified',
     tabs: { config: 'Configuration', events: 'Events' },
     actions: { refresh: 'Refresh runtime', retry: 'Retry', Allow: 'Allow', Warn: 'Warn', Block: 'Block' },
     common: { actions: 'Actions', never: 'Never' },
@@ -35,7 +36,9 @@ export default {
     runtime: {
       title: 'Runtime overview',
       description: 'Shows the configuration currently active on the server. Unsaved draft changes do not affect these values.',
-      process: 'Process status', mode: 'Effective mode', version: 'Active / expected version', workers: 'Active / total workers',
+      process: 'Process status', mode: 'Effective mode', version: 'Saves',
+      versionLagging: 'Runtime is still on save {active}; the latest save has not taken effect',
+      workers: 'Active / total workers',
       queue: 'Active jobs / capacity', dependencies: 'Dependencies', guardMetrics: 'Synchronous Guard metrics', latest: 'Latest processing and error',
       queueBreakdown: 'queued {queued} · processing {processing} · retry {retry} · done {done} · failed {failed}',
       deliveryTotals: 'Total enqueued {enqueued} · dropped {dropped} · processed {processed} · failed {failed}',

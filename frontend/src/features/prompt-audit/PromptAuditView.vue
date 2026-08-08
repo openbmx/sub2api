@@ -8,8 +8,9 @@
           <p class="mt-2 max-w-3xl text-sm text-gray-500 dark:text-dark-300">{{ t('admin.promptAudit.description') }}</p>
         </div>
         <div v-if="draft" class="text-right text-xs text-gray-500 dark:text-dark-400">
-          <p>{{ t('admin.promptAudit.configVersion', { version: draft.config_version }) }}</p>
+          <p>{{ t('admin.promptAudit.lastModified') }}</p>
           <p v-if="draft.updated_at" class="mt-1">{{ formatDate(draft.updated_at) }}</p>
+          <p v-else class="mt-1">{{ t('admin.promptAudit.common.never') }}</p>
         </div>
       </header>
 
