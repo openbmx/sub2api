@@ -3,6 +3,7 @@ package securityaudit
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +18,7 @@ type GuardEvaluator struct {
 	perNodeLimit int
 	nodeMu       sync.Mutex
 	nodes        map[string]chan struct{}
+	blockCache   *blockVerdictCache
 }
 
 func NewGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metrics) *GuardEvaluator {
@@ -30,8 +32,10 @@ func newGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metric
 	if perNodeLimit < 1 {
 		perNodeLimit = 16
 	}
-	return &GuardEvaluator{scanner: scanner, repo: repo, metrics: metrics, clock: realClock{},
-		global: make(chan struct{}, globalLimit), perNodeLimit: perNodeLimit, nodes: map[string]chan struct{}{}}
+	clock := realClock{}
+	return &GuardEvaluator{scanner: scanner, repo: repo, metrics: metrics, clock: clock,
+		global: make(chan struct{}, globalLimit), perNodeLimit: perNodeLimit, nodes: map[string]chan struct{}{},
+		blockCache: newBlockVerdictCache(DefaultBlockVerdictTTL, maxBlockVerdictEntries, clock)}
 }
 
 func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot) (*PromptDecision, error) {
@@ -53,6 +57,12 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
 		g.recordFailure(ctx, cfg, snapshot, "no_enabled_endpoint", g.clock.Now().Sub(start))
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
+	}
+	// Replay a recent rejection of this exact prompt before spending an audit
+	// call on it. This runs ahead of the bulkhead so a retry storm cannot
+	// exhaust the concurrency budget and start failing open.
+	if cached, ok := g.blockCache.get(cfg.ConfigVersion, snapshot.PromptHash); ok {
+		return g.replayCachedBlock(ctx, cfg, snapshot, baseFields, cached, start), nil
 	}
 	select {
 	case g.global <- struct{}{}:
@@ -151,6 +161,10 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	decision := &PromptDecision{Kind: kind, Result: aggregated, AllowNextStage: kind == DecisionAllow || kind == DecisionFlag}
 	if kind == DecisionBlock {
 		decision.ErrorCode = ErrorCodeBlocked
+		applyBlockResponse(decision, cfg, snapshot)
+		// Remember the rejection so the next attempt at the same prompt does
+		// not get a fresh roll of a nondeterministic audit model.
+		g.blockCache.put(cfg.ConfigVersion, snapshot.PromptHash, aggregated)
 	}
 	if g.metrics != nil {
 		g.metrics.Observe(kind, g.clock.Now().Sub(start))
@@ -187,6 +201,67 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		}))
 	}
 	return decision, nil
+}
+
+// replayCachedBlock serves a previously cached rejection without calling the
+// audit model. The event is still recorded and logged, so an operator can see
+// that a client retried a rejected prompt and how often, rather than the
+// retries silently disappearing.
+func (g *GuardEvaluator) replayCachedBlock(
+	ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot,
+	baseFields map[string]any, cached NormalizedResult, start time.Time,
+) *PromptDecision {
+	elapsed := g.clock.Now().Sub(start)
+	cached.LatencyMS = int(elapsed.Milliseconds())
+	decision := &PromptDecision{Kind: DecisionBlock, Result: &cached, ErrorCode: ErrorCodeBlocked, CachedBlock: true}
+	applyBlockResponse(decision, cfg, snapshot)
+	if g.metrics != nil {
+		g.metrics.Observe(DecisionBlock, elapsed)
+	}
+	if g.repo != nil {
+		if _, err := g.repo.RecordBlocking(ctx, snapshot.Redacted(), cfg.ConfigVersion, &cached, cfg.StorePassEvents); err != nil {
+			if g.metrics != nil {
+				g.metrics.IncRecordFailed()
+			}
+			LogWarn(EventResultRecordFailed, mergeLogFields(baseFields, map[string]any{
+				"decision": DecisionBlock, "error_code": "result_record_failed",
+				"stage": snapshot.Stage, "status": "failed",
+			}))
+		}
+	}
+	LogWarn(EventGuardBlocked, mergeLogFields(baseFields, map[string]any{
+		"guard_endpoint_id": cached.GuardEndpointID, "decision": DecisionBlock,
+		"risk_level": cached.RiskLevel, "action": cached.Action, "chunk_total": cached.ChunkTotal,
+		"latency_ms": cached.LatencyMS, "status": "blocked", "error_code": ErrorCodeBlocked,
+		"stage": snapshot.Stage, "upstream_dispatched": false, "billing_preconsumed": false,
+		"cached_block": true,
+	}))
+	return decision
+}
+
+// applyBlockResponse stamps the administrator-configured status and message
+// onto a block. The message names the matched risk categories and the request
+// ID but never the audit model's own reasoning: the reason text explains which
+// wording tripped the filter, which is precisely the feedback an attacker
+// needs to iterate a prompt past it. The request ID lets an operator pull the
+// full record, reason included, from the audit event log.
+func applyBlockResponse(decision *PromptDecision, cfg ActiveConfig, snapshot PromptSnapshot) {
+	if decision == nil {
+		return
+	}
+	status, message := cfg.BlockResponse()
+	decision.HTTPStatus = status
+	details := make([]string, 0, 2)
+	if decision.Result != nil && len(decision.Result.Categories) > 0 {
+		details = append(details, "风险类别: "+strings.Join(decision.Result.Categories, ", "))
+	}
+	if id := strings.TrimSpace(snapshot.RequestID); id != "" {
+		details = append(details, "请求 ID: "+id)
+	}
+	if len(details) > 0 {
+		message += "（" + strings.Join(details, "；") + "）"
+	}
+	decision.ClientMessage = message
 }
 
 func logGuardFailure(snapshot PromptSnapshot, cfg ActiveConfig, kind DecisionKind, code, guardEndpointID string, latency time.Duration) {

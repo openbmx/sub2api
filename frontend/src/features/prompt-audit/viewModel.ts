@@ -84,6 +84,10 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     custom_prompt: (draft.custom_prompt ?? '').trim(),
     block_threshold: Number(draft.block_threshold) || DEFAULT_BLOCK_THRESHOLD,
     flag_threshold: Number(draft.flag_threshold) || DEFAULT_FLAG_THRESHOLD,
+    // 0 and '' tell the server to keep what is stored, which is what an empty
+    // field in the form should mean rather than a silent reset to the default.
+    block_http_status: Number(draft.block_http_status) || 0,
+    block_message: (draft.block_message ?? '').trim(),
     endpoints: draft.endpoints.map((endpoint) => ({
       id: endpoint.id.trim(),
       name: endpoint.name.trim(),

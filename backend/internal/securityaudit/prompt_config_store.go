@@ -360,6 +360,7 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		QueueCapacity: req.QueueCapacity, Scanners: append([]string(nil), req.Scanners...),
 		AllGroups: req.AllGroups, GroupIDs: append([]int64(nil), req.GroupIDs...),
 		CustomPrompt: strings.TrimSpace(req.CustomPrompt), BlockThreshold: req.BlockThreshold, FlagThreshold: req.FlagThreshold,
+		BlockHTTPStatus: req.BlockHTTPStatus, BlockMessage: strings.TrimSpace(req.BlockMessage),
 		ConfigVersion: current.ConfigVersion, UpdatedBy: actorID,
 		Endpoints: make([]StorageEndpoint, 0, len(req.Endpoints)),
 	}
@@ -374,6 +375,12 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 	}
 	if next.FlagThreshold == 0 {
 		next.FlagThreshold = current.FlagThreshold
+	}
+	if next.BlockHTTPStatus == 0 {
+		next.BlockHTTPStatus = current.BlockHTTPStatus
+	}
+	if next.BlockMessage == "" {
+		next.BlockMessage = current.BlockMessage
 	}
 	for _, endpoint := range req.Endpoints {
 		baseURL, err := NormalizeBaseURL(endpoint.BaseURL)

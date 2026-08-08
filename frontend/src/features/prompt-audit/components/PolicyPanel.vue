@@ -168,6 +168,38 @@
       <p v-if="thresholdsOutOfOrder" class="mt-2 text-xs text-red-600 dark:text-red-400">
         {{ t('admin.promptAudit.moderation.thresholdOrder') }}
       </p>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+        <label class="block text-sm text-gray-700 dark:text-dark-200">
+          <span>{{ t('admin.promptAudit.moderation.blockStatus') }}</span>
+          <input
+            :value="draft.block_http_status"
+            type="number"
+            min="400"
+            max="499"
+            step="1"
+            class="input mt-1.5 w-full"
+            :aria-label="t('admin.promptAudit.moderation.blockStatus')"
+            @input="patch({ block_http_status: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.moderation.blockStatusHint') }}</span>
+        </label>
+        <label class="block text-sm text-gray-700 dark:text-dark-200">
+          <span>{{ t('admin.promptAudit.moderation.blockMessage') }}</span>
+          <input
+            :value="draft.block_message"
+            type="text"
+            maxlength="500"
+            class="input mt-1.5 w-full"
+            :aria-label="t('admin.promptAudit.moderation.blockMessage')"
+            @input="patch({ block_message: ($event.target as HTMLInputElement).value })"
+          />
+          <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.moderation.blockMessageHint') }}</span>
+        </label>
+      </div>
+      <p v-if="retryProneStatus" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+        {{ t('admin.promptAudit.moderation.blockStatusRetryWarning') }}
+      </p>
     </div>
   </section>
 </template>
@@ -217,6 +249,9 @@ const scannersInert = computed(() => usesCustomJSON.value && !isCategoryAwarePro
 const thresholdsOutOfOrder = computed(
   () => Number(props.draft.flag_threshold) > Number(props.draft.block_threshold),
 )
+// 429 and 408 mean "try again" in HTTP, so a client that honours them will
+// re-send the prompt the audit just rejected.
+const retryProneStatus = computed(() => [408, 429].includes(Number(props.draft.block_http_status)))
 
 function usePreset(prompt: string) {
   patch({ custom_prompt: prompt })

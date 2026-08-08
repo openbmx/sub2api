@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
@@ -36,7 +37,35 @@ const (
 	// one upstream call. Defaults are unchanged.
 	MaxInputLimit     = 1000000
 	DefaultPayloadTTL = 30 * time.Minute
+
+	// DefaultBlockHTTPStatus keeps the historical 403. The status is
+	// administrator-configurable because different clients react differently,
+	// but it is constrained to 4xx: a block is a client-side policy outcome,
+	// and a 5xx would tell well-behaved clients to retry the same rejected
+	// prompt. 429 is accepted but is a poor choice for the same reason — it
+	// means "retry later" and invites exactly the retry loop an operator is
+	// usually trying to stop.
+	DefaultBlockHTTPStatus = 403
+	MinBlockHTTPStatus     = 400
+	MaxBlockHTTPStatus     = 499
+	MaxBlockMessageRunes   = 500
+
+	// DefaultBlockVerdictTTL is how long a block is replayed for an identical
+	// prompt. Audit models are not deterministic — the same prompt measured
+	// eight times against deepseek-v4-flash at temperature 0 scored between
+	// 0.1 and 0.9 — so without this a client simply retries until a run falls
+	// below the threshold. Only blocks are cached: caching a pass would freeze
+	// one lucky false negative in place for the whole window.
+	DefaultBlockVerdictTTL = 10 * time.Minute
+	// maxBlockVerdictEntries bounds the in-process cache. Entries are small and
+	// expire quickly; the cap only exists so a flood of distinct blocked
+	// prompts cannot grow it without limit.
+	maxBlockVerdictEntries = 4096
 )
+
+// DefaultBlockMessage is the client-facing text used when an administrator has
+// not set one.
+const DefaultBlockMessage = "提示词安全审计拒绝了该请求，请调整输入后重试"
 
 type SecretEncryptor interface {
 	Encrypt(plaintext string) (string, error)
@@ -101,13 +130,18 @@ type storageConfig struct {
 	Endpoints        []StorageEndpoint `json:"endpoints"`
 	// CustomPrompt is the administrator-authored moderation policy shared by
 	// every custom_json endpoint, so it is edited once rather than per node.
-	CustomPrompt   string    `json:"custom_prompt"`
-	BlockThreshold float64   `json:"block_threshold"`
-	FlagThreshold  float64   `json:"flag_threshold"`
-	ConfigVersion  int64     `json:"config_version"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	UpdatedBy      int64     `json:"updated_by"`
-	ChangeSummary  string    `json:"change_summary"`
+	CustomPrompt   string  `json:"custom_prompt"`
+	BlockThreshold float64 `json:"block_threshold"`
+	FlagThreshold  float64 `json:"flag_threshold"`
+	// BlockHTTPStatus and BlockMessage shape the response a blocked client
+	// sees. Absent in configs saved before they existed, in which case the
+	// defaults apply.
+	BlockHTTPStatus int       `json:"block_http_status"`
+	BlockMessage    string    `json:"block_message"`
+	ConfigVersion   int64     `json:"config_version"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	UpdatedBy       int64     `json:"updated_by"`
+	ChangeSummary   string    `json:"change_summary"`
 }
 
 type ActiveEndpoint struct {
@@ -152,6 +186,8 @@ type ActiveConfig struct {
 	CustomPrompt           string
 	BlockThreshold         float64
 	FlagThreshold          float64
+	BlockHTTPStatus        int
+	BlockMessage           string
 	ConfigVersion          int64
 	UpdatedAt              time.Time
 	UpdatedBy              int64
@@ -191,13 +227,17 @@ type PublicConfig struct {
 	// CategoryAwareCustomPrompt is offered as an alternative preset because the
 	// default contract reports no categories, which leaves the scanner toggles
 	// with nothing to act on.
-	CategoryAwareCustomPrompt string    `json:"category_aware_custom_prompt"`
-	BlockThreshold            float64   `json:"block_threshold"`
-	FlagThreshold             float64   `json:"flag_threshold"`
-	ConfigVersion             int64     `json:"config_version"`
-	UpdatedAt                 time.Time `json:"updated_at"`
-	UpdatedBy                 int64     `json:"updated_by"`
-	ChangeSummary             string    `json:"change_summary"`
+	CategoryAwareCustomPrompt string  `json:"category_aware_custom_prompt"`
+	BlockThreshold            float64 `json:"block_threshold"`
+	FlagThreshold             float64 `json:"flag_threshold"`
+	// Effective values, already defaulted, so the UI never renders a raw zero
+	// for a config saved before these fields existed.
+	BlockHTTPStatus int       `json:"block_http_status"`
+	BlockMessage    string    `json:"block_message"`
+	ConfigVersion   int64     `json:"config_version"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	UpdatedBy       int64     `json:"updated_by"`
+	ChangeSummary   string    `json:"change_summary"`
 }
 
 type UpdateEndpoint struct {
@@ -231,6 +271,10 @@ type UpdateConfigRequest struct {
 	CustomPrompt           string           `json:"custom_prompt"`
 	BlockThreshold         float64          `json:"block_threshold"`
 	FlagThreshold          float64          `json:"flag_threshold"`
+	// Zero and empty mean "leave as stored", matching how CustomPrompt and the
+	// thresholds behave, so an older admin client cannot reset them by omission.
+	BlockHTTPStatus int    `json:"block_http_status"`
+	BlockMessage    string `json:"block_message"`
 }
 
 func DefaultStorageConfig() storageConfig {
@@ -453,6 +497,9 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 	if err := validateModerationPolicy(req.CustomPrompt, req.BlockThreshold, req.FlagThreshold); err != nil {
 		return err
 	}
+	if err := validateBlockResponse(req.BlockHTTPStatus, req.BlockMessage); err != nil {
+		return err
+	}
 	for _, endpoint := range req.Endpoints {
 		if endpoint.TimeoutMS < MinTimeoutMS || endpoint.TimeoutMS > MaxTimeoutMS {
 			return infraerrors.BadRequest("prompt_audit_invalid_timeout", "审计节点超时超出允许范围")
@@ -500,6 +547,36 @@ func (cfg ActiveConfig) EnabledEndpoints() []ActiveEndpoint {
 	return result
 }
 
+// validateBlockResponse bounds the administrator-configurable block response.
+// Zero and empty are accepted and mean "keep whatever is stored", which is how
+// an admin client that predates these fields behaves.
+func validateBlockResponse(status int, message string) error {
+	if status != 0 && (status < MinBlockHTTPStatus || status > MaxBlockHTTPStatus) {
+		// 5xx is rejected on purpose: it tells a client the server failed and
+		// the same prompt is worth retrying, which is the opposite of a policy
+		// block.
+		return infraerrors.BadRequest("prompt_audit_invalid_block_status", "拦截响应状态码必须在 400-499 之间")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(message)) > MaxBlockMessageRunes {
+		return infraerrors.BadRequest("prompt_audit_block_message_too_long", "拦截提示文案过长")
+	}
+	return nil
+}
+
+// BlockResponse returns the effective status and message for a blocked
+// request, falling back to the defaults for configs saved before these fields
+// existed so behaviour is unchanged until an administrator opts in.
+func (cfg ActiveConfig) BlockResponse() (status int, message string) {
+	status, message = cfg.BlockHTTPStatus, strings.TrimSpace(cfg.BlockMessage)
+	if status < MinBlockHTTPStatus || status > MaxBlockHTTPStatus {
+		status = DefaultBlockHTTPStatus
+	}
+	if message == "" {
+		message = DefaultBlockMessage
+	}
+	return status, message
+}
+
 // InvalidTokenEndpointIDs lists endpoints whose stored token could not be
 // decrypted with the current encryption key.
 func (cfg ActiveConfig) InvalidTokenEndpointIDs() []string {
@@ -537,6 +614,12 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 		})
 	}
 	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled}
+	// Surface the effective values, not the raw zeros, so the admin UI shows
+	// what a blocked client would actually receive on a config that predates
+	// these fields.
+	blockStatus, blockMessage := ActiveConfig{
+		BlockHTTPStatus: cfg.BlockHTTPStatus, BlockMessage: cfg.BlockMessage,
+	}.BlockResponse()
 	return PublicConfig{
 		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		BlockingFailOpen: cfg.BlockingFailOpen, StorePassEvents: cfg.StorePassEvents,
@@ -548,6 +631,7 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 		CustomPrompt: cfg.CustomPrompt, DefaultCustomPrompt: DefaultCustomAuditPrompt,
 		CategoryAwareCustomPrompt: CategoryAwareAuditPrompt,
 		BlockThreshold:            cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
+		BlockHTTPStatus: blockStatus, BlockMessage: blockMessage,
 		ConfigVersion: cfg.ConfigVersion,
 		UpdatedAt:     cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}
@@ -562,6 +646,7 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 		GroupIDs: append([]int64(nil), cfg.GroupIDs...), ConfigVersion: cfg.ConfigVersion,
 		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 		CustomPrompt: cfg.CustomPrompt, BlockThreshold: cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
+		BlockHTTPStatus: cfg.BlockHTTPStatus, BlockMessage: cfg.BlockMessage,
 		Endpoints: make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
 	}
 	for _, ep := range cfg.Endpoints {

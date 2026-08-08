@@ -44,6 +44,9 @@ export interface PromptAuditConfig {
   category_aware_custom_prompt: string
   block_threshold: number
   flag_threshold: number
+  /** Effective block response; the server defaults these for older configs. */
+  block_http_status: number
+  block_message: string
   config_version: number
   updated_at: string
   updated_by: number
@@ -70,6 +73,8 @@ export interface PromptAuditUpdateRequest {
   custom_prompt: string
   block_threshold: number
   flag_threshold: number
+  block_http_status: number
+  block_message: string
   endpoints: Array<{
     id: string
     name: string

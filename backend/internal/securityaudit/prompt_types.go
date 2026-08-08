@@ -180,6 +180,15 @@ type PromptDecision struct {
 	ErrorCode      string            `json:"error_code,omitempty"`
 	Result         *NormalizedResult `json:"result,omitempty"`
 	AllowNextStage bool              `json:"allow_next_stage"`
+	// HTTPStatus and ClientMessage carry the administrator-configured block
+	// response. The guard fills them because only it holds the active config;
+	// zero and empty mean "coordinator default", which keeps every pre-existing
+	// caller and test unchanged.
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	ClientMessage string `json:"client_message,omitempty"`
+	// CachedBlock marks a verdict replayed from the block cache rather than
+	// re-derived from the audit model.
+	CachedBlock bool `json:"cached_block,omitempty"`
 }
 
 type LegacyDecision struct {
