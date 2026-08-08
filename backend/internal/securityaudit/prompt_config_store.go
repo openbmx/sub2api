@@ -361,7 +361,8 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		AllGroups: req.AllGroups, GroupIDs: append([]int64(nil), req.GroupIDs...),
 		CustomPrompt: strings.TrimSpace(req.CustomPrompt), BlockThreshold: req.BlockThreshold, FlagThreshold: req.FlagThreshold,
 		BlockHTTPStatus: req.BlockHTTPStatus, BlockMessage: strings.TrimSpace(req.BlockMessage),
-		ConfigVersion: current.ConfigVersion, UpdatedBy: actorID,
+		NodeConcurrency: req.NodeConcurrency,
+		ConfigVersion:   current.ConfigVersion, UpdatedBy: actorID,
 		Endpoints: make([]StorageEndpoint, 0, len(req.Endpoints)),
 	}
 	// An admin client that predates custom prompts omits these fields entirely.
@@ -381,6 +382,9 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 	}
 	if next.BlockMessage == "" {
 		next.BlockMessage = current.BlockMessage
+	}
+	if next.NodeConcurrency == 0 {
+		next.NodeConcurrency = current.NodeConcurrency
 	}
 	for _, endpoint := range req.Endpoints {
 		baseURL, err := NormalizeBaseURL(endpoint.BaseURL)

@@ -78,6 +78,9 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     strategy: 'priority',
     worker_count: Number(draft.worker_count),
     queue_capacity: Number(draft.queue_capacity),
+    // 0 tells the server to keep the stored value, so an empty field does not
+    // silently reset the limit to the default.
+    node_concurrency: Number(draft.node_concurrency) || 0,
     scanners: [...draft.scanners],
     all_groups: draft.all_groups,
     group_ids: draft.all_groups ? [] : [...draft.group_ids].sort((a, b) => a - b),

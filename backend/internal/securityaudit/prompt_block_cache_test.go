@@ -127,6 +127,36 @@ func TestApplyBlockResponseNamesCategoriesAndRequestIDButNotReason(t *testing.T)
 	require.NotContains(t, decision.ClientMessage, "提权步骤")
 }
 
+// The per-node cap decides whether a burst is queued or rejected outright, and
+// a rejection is indistinguishable from a hard failure in the logs, so the
+// fallback behaviour matters: an unset value must not silently become something
+// other than the limit the evaluator was built with.
+func TestEffectiveNodeConcurrencyFallsBackForUnsetOrOutOfRange(t *testing.T) {
+	require.Equal(t, DefaultNodeConcurrency, ActiveConfig{}.EffectiveNodeConcurrency())
+	require.Equal(t, DefaultNodeConcurrency, ActiveConfig{NodeConcurrency: 0}.EffectiveNodeConcurrency())
+	require.Equal(t, DefaultNodeConcurrency, ActiveConfig{NodeConcurrency: -4}.EffectiveNodeConcurrency())
+	require.Equal(t, DefaultNodeConcurrency, ActiveConfig{NodeConcurrency: MaxNodeConcurrency + 1}.EffectiveNodeConcurrency())
+	require.Equal(t, 64, ActiveConfig{NodeConcurrency: 64}.EffectiveNodeConcurrency())
+}
+
+// Raising the cap must take effect without a restart, which means replacing the
+// channel: capacity is fixed once a channel exists.
+func TestNodeSemaphoreResizesAndHonoursConstructorDefault(t *testing.T) {
+	g := newGuardEvaluator(nil, nil, nil, 64, 3)
+
+	unset := g.nodeSemaphore("dn1", 0)
+	require.Equal(t, 3, cap(unset), "an unset limit keeps the evaluator's own default")
+
+	raised := g.nodeSemaphore("dn1", 32)
+	require.Equal(t, 32, cap(raised), "a configured limit resizes the limiter")
+	require.False(t, unset == raised, "resizing must replace the limiter, not mutate it")
+
+	again := g.nodeSemaphore("dn1", 32)
+	require.True(t, raised == again, "an unchanged limit must reuse the same limiter")
+
+	require.Equal(t, 3, cap(g.nodeSemaphore("dn1", MaxNodeConcurrency+1)), "out-of-range falls back rather than allocating absurd capacity")
+}
+
 func TestApplyBlockResponseOmitsEmptyDetails(t *testing.T) {
 	decision := &PromptDecision{Kind: DecisionBlock, Result: &NormalizedResult{}}
 	applyBlockResponse(decision, ActiveConfig{}, PromptSnapshot{})

@@ -33,6 +33,7 @@ export interface PromptAuditConfig {
   strategy: 'priority'
   worker_count: number
   queue_capacity: number
+  node_concurrency: number
   scanners: string[]
   all_groups: boolean
   group_ids: number[]
@@ -67,6 +68,7 @@ export interface PromptAuditUpdateRequest {
   strategy: 'priority'
   worker_count: number
   queue_capacity: number
+  node_concurrency: number
   scanners: string[]
   all_groups: boolean
   group_ids: number[]
@@ -155,6 +157,7 @@ export interface PromptGuardMetrics {
   invalid: number
   timeouts: number
   failovers: number
+  /** Requests rejected because the per-node concurrency slots were all taken. */
   bulkhead_full: number
   record_failed: number
   latency_avg_ms?: number
@@ -175,6 +178,7 @@ export interface PromptAuditRuntime {
   worker_active: number
   worker_heartbeat_at?: string
   queue_capacity: number
+  node_concurrency: number
   queue: PromptQueueStats
   processed_total: number
   failed_total: number

@@ -306,7 +306,7 @@ func (g *GuardEvaluator) recordFailure(ctx context.Context, cfg ActiveConfig, sn
 func (g *GuardEvaluator) scanChunk(ctx context.Context, cfg ActiveConfig, endpoints []ActiveEndpoint, chunk string) (*NormalizedResult, error) {
 	var lastErr error
 	for index, endpoint := range endpoints {
-		semaphore := g.nodeSemaphore(endpoint.ID)
+		semaphore := g.nodeSemaphore(endpoint.ID, cfg.NodeConcurrency)
 		select {
 		case semaphore <- struct{}{}:
 		case <-ctx.Done():
@@ -354,12 +354,24 @@ func callPromptScanner(ctx context.Context, scanner PromptScanner, endpoint Acti
 	return scanner.Scan(ctx, endpoint, chunk, scanners)
 }
 
-func (g *GuardEvaluator) nodeSemaphore(id string) chan struct{} {
+// nodeSemaphore returns the per-node in-flight limiter, sized to the currently
+// configured limit. A channel's capacity is fixed at creation, so raising the
+// limit replaces the channel; in-flight callers still release into the old one,
+// which is then collected. Briefly allowing a few more than the new cap during
+// that swap is harmless — the alternative is making an operator restart the
+// service for a concurrency change to take effect.
+func (g *GuardEvaluator) nodeSemaphore(id string, limit int) chan struct{} {
+	// Zero or out-of-range means the operator did not choose one, so the limit
+	// this evaluator was constructed with stands. Tests rely on that, and so
+	// does every config saved before the field existed.
+	if limit < MinNodeConcurrency || limit > MaxNodeConcurrency {
+		limit = g.perNodeLimit
+	}
 	g.nodeMu.Lock()
 	defer g.nodeMu.Unlock()
 	semaphore := g.nodes[id]
-	if semaphore == nil {
-		semaphore = make(chan struct{}, g.perNodeLimit)
+	if semaphore == nil || cap(semaphore) != limit {
+		semaphore = make(chan struct{}, limit)
 		g.nodes[id] = semaphore
 	}
 	return semaphore

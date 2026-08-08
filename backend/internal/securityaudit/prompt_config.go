@@ -50,6 +50,17 @@ const (
 	MaxBlockHTTPStatus     = 499
 	MaxBlockMessageRunes   = 500
 
+	// DefaultNodeConcurrency caps in-flight audits per node. It used to be a
+	// hardcoded 16, which made a saturated node indistinguishable from a broken
+	// one: the 17th request fails in single-digit milliseconds with no endpoint
+	// and no upstream call, exactly like a hard failure. It matters more as
+	// timeout_ms grows, because each slot is held for the whole evaluation —
+	// at a 120s budget a burst of parallel agent requests can hold every slot
+	// for two minutes.
+	DefaultNodeConcurrency = 16
+	MinNodeConcurrency     = 1
+	MaxNodeConcurrency     = 256
+
 	// DefaultBlockVerdictTTL is how long a block is replayed for an identical
 	// prompt. Audit models are not deterministic — the same prompt measured
 	// eight times against deepseek-v4-flash at temperature 0 scored between
@@ -136,8 +147,10 @@ type storageConfig struct {
 	// BlockHTTPStatus and BlockMessage shape the response a blocked client
 	// sees. Absent in configs saved before they existed, in which case the
 	// defaults apply.
-	BlockHTTPStatus int       `json:"block_http_status"`
-	BlockMessage    string    `json:"block_message"`
+	BlockHTTPStatus int    `json:"block_http_status"`
+	BlockMessage    string `json:"block_message"`
+	// NodeConcurrency caps simultaneous audits per node. Zero means default.
+	NodeConcurrency int       `json:"node_concurrency"`
 	ConfigVersion   int64     `json:"config_version"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	UpdatedBy       int64     `json:"updated_by"`
@@ -188,6 +201,7 @@ type ActiveConfig struct {
 	FlagThreshold          float64
 	BlockHTTPStatus        int
 	BlockMessage           string
+	NodeConcurrency        int
 	ConfigVersion          int64
 	UpdatedAt              time.Time
 	UpdatedBy              int64
@@ -234,6 +248,7 @@ type PublicConfig struct {
 	// for a config saved before these fields existed.
 	BlockHTTPStatus int       `json:"block_http_status"`
 	BlockMessage    string    `json:"block_message"`
+	NodeConcurrency int       `json:"node_concurrency"`
 	ConfigVersion   int64     `json:"config_version"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	UpdatedBy       int64     `json:"updated_by"`
@@ -275,6 +290,7 @@ type UpdateConfigRequest struct {
 	// thresholds behave, so an older admin client cannot reset them by omission.
 	BlockHTTPStatus int    `json:"block_http_status"`
 	BlockMessage    string `json:"block_message"`
+	NodeConcurrency int    `json:"node_concurrency"`
 }
 
 func DefaultStorageConfig() storageConfig {
@@ -500,6 +516,10 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 	if err := validateBlockResponse(req.BlockHTTPStatus, req.BlockMessage); err != nil {
 		return err
 	}
+	// Zero means "keep stored", matching the other optional policy fields.
+	if req.NodeConcurrency != 0 && (req.NodeConcurrency < MinNodeConcurrency || req.NodeConcurrency > MaxNodeConcurrency) {
+		return infraerrors.BadRequest("prompt_audit_invalid_node_concurrency", "单节点并发上限超出允许范围")
+	}
 	for _, endpoint := range req.Endpoints {
 		if endpoint.TimeoutMS < MinTimeoutMS || endpoint.TimeoutMS > MaxTimeoutMS {
 			return infraerrors.BadRequest("prompt_audit_invalid_timeout", "审计节点超时超出允许范围")
@@ -561,6 +581,15 @@ func validateBlockResponse(status int, message string) error {
 		return infraerrors.BadRequest("prompt_audit_block_message_too_long", "拦截提示文案过长")
 	}
 	return nil
+}
+
+// EffectiveNodeConcurrency returns the per-node in-flight cap, falling back to
+// the default for configs saved before the field existed.
+func (cfg ActiveConfig) EffectiveNodeConcurrency() int {
+	if cfg.NodeConcurrency < MinNodeConcurrency || cfg.NodeConcurrency > MaxNodeConcurrency {
+		return DefaultNodeConcurrency
+	}
+	return cfg.NodeConcurrency
 }
 
 // BlockResponse returns the effective status and message for a blocked
@@ -632,8 +661,9 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 		CategoryAwareCustomPrompt: CategoryAwareAuditPrompt,
 		BlockThreshold:            cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		BlockHTTPStatus: blockStatus, BlockMessage: blockMessage,
-		ConfigVersion: cfg.ConfigVersion,
-		UpdatedAt:     cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
+		NodeConcurrency: ActiveConfig{NodeConcurrency: cfg.NodeConcurrency}.EffectiveNodeConcurrency(),
+		ConfigVersion:   cfg.ConfigVersion,
+		UpdatedAt:       cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}
 }
 
@@ -647,7 +677,8 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 		CustomPrompt: cfg.CustomPrompt, BlockThreshold: cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		BlockHTTPStatus: cfg.BlockHTTPStatus, BlockMessage: cfg.BlockMessage,
-		Endpoints: make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
+		NodeConcurrency: cfg.NodeConcurrency,
+		Endpoints:       make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
 	}
 	for _, ep := range cfg.Endpoints {
 		token := ""

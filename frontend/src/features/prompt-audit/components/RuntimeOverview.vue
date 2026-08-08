@@ -122,6 +122,10 @@ const guardMetricItems = computed(() => {
     { label: t('admin.promptAudit.metrics.unavailable'), value: metrics.unavailable },
     { label: t('admin.promptAudit.metrics.timeouts'), value: metrics.timeouts },
     { label: t('admin.promptAudit.metrics.failovers'), value: metrics.failovers },
+    // Concurrency rejections look identical to any other "unavailable" in the
+    // logs — instant failure, no endpoint, no upstream call — so without this
+    // counter an operator cannot tell a saturated node from a broken one.
+    { label: t('admin.promptAudit.metrics.bulkheadFull'), value: metrics.bulkhead_full ?? 0 },
     { label: 'P95', value: metrics.latency_p95_ms != null ? `${metrics.latency_p95_ms} ms` : '—' },
   ]
 })
