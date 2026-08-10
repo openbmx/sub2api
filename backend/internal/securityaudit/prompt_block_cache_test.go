@@ -141,6 +141,55 @@ func TestBlockVerdictCacheEvictsWhenFull(t *testing.T) {
 	require.Equal(t, ActionBlock, got.Action)
 }
 
+// Under multi-user load the cache fills with unrelated prompts. Discarding
+// blocks to make room would hand every one of them a fresh roll of a
+// nondeterministic model — the retry bypass this cache exists to close.
+func TestEvictionSacrificesPassesBeforeBlocks(t *testing.T) {
+	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
+	cache := newBlockVerdictCache(10*time.Minute, 4, clock)
+	pass := &NormalizedResult{Decision: EventPass, Action: ActionAllow}
+
+	cache.put(7, "block-1", DecisionBlock, blockResult())
+	cache.put(7, "block-2", DecisionBlock, blockResult())
+	cache.put(7, "pass-1", DecisionAllow, pass)
+	cache.put(7, "pass-2", DecisionAllow, pass)
+	// Nothing has expired, so this insert must evict from the live set.
+	cache.put(7, "block-3", DecisionBlock, blockResult())
+
+	for _, key := range []string{"block-1", "block-2", "block-3"} {
+		_, kind, ok := cache.get(7, key)
+		require.True(t, ok, "block %s must survive eviction", key)
+		require.Equal(t, DecisionBlock, kind)
+	}
+	for _, key := range []string{"pass-1", "pass-2"} {
+		_, _, ok := cache.get(7, key)
+		require.False(t, ok, "pass %s should have been sacrificed first", key)
+	}
+}
+
+// When every live entry is a block there is nothing cheap left to drop, but
+// clearing the map would release them all at once. Evict one instead.
+func TestEvictionDropsOnlyOneBlockWhenNothingElseIsAvailable(t *testing.T) {
+	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
+	cache := newBlockVerdictCache(10*time.Minute, 3, clock)
+
+	cache.put(7, "oldest", DecisionBlock, blockResult())
+	clock.now = clock.now.Add(time.Second)
+	cache.put(7, "middle", DecisionBlock, blockResult())
+	clock.now = clock.now.Add(time.Second)
+	cache.put(7, "newest", DecisionBlock, blockResult())
+	clock.now = clock.now.Add(time.Second)
+	cache.put(7, "extra", DecisionBlock, blockResult())
+
+	require.Equal(t, 3, len(cache.entries), "only one entry may be released, not the whole map")
+	_, _, ok := cache.get(7, "oldest")
+	require.False(t, ok, "the entry nearest expiry is the one to go")
+	for _, key := range []string{"middle", "newest", "extra"} {
+		_, _, ok := cache.get(7, key)
+		require.True(t, ok, "block %s must remain cached", key)
+	}
+}
+
 func TestBlockResponseDefaultsAndOverrides(t *testing.T) {
 	status, message := ActiveConfig{}.BlockResponse()
 	require.Equal(t, DefaultBlockHTTPStatus, status, "a config predating these fields keeps 403")

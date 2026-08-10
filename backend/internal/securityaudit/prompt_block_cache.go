@@ -117,17 +117,39 @@ func (c *blockVerdictCache) put(configVersion int64, promptHash string, kind Dec
 	c.entries[key] = blockVerdictEntry{result: cloneNormalizedResult(*result), kind: kind, expires: now.Add(ttl)}
 }
 
-// evictLocked drops expired entries first. If every entry is still live the
-// map is cleared outright: entries are cheap to rebuild (one audit call) and a
-// full reset is preferable to tracking access order for a cache this small.
+// evictLocked makes room without ever discarding live blocks wholesale.
+//
+// The two entry kinds are not equally valuable. Dropping a cached pass costs
+// one extra audit call. Dropping a cached block reopens the retry bypass this
+// cache exists to close: the prompt gets a fresh roll of a nondeterministic
+// model and, at the measured pass rate, walks through. So expired entries go
+// first, then passes, and only if every live entry is a block does one get
+// evicted — the nearest to expiry, one at a time, rather than the whole map.
 func (c *blockVerdictCache) evictLocked(now time.Time) {
 	for key, entry := range c.entries {
 		if !now.Before(entry.expires) {
 			delete(c.entries, key)
 		}
 	}
-	if len(c.entries) >= c.max {
-		c.entries = make(map[string]blockVerdictEntry, c.max)
+	if len(c.entries) < c.max {
+		return
+	}
+	for key, entry := range c.entries {
+		if entry.kind != DecisionBlock {
+			delete(c.entries, key)
+		}
+	}
+	if len(c.entries) < c.max {
+		return
+	}
+	oldestKey, oldestAt := "", time.Time{}
+	for key, entry := range c.entries {
+		if oldestKey == "" || entry.expires.Before(oldestAt) {
+			oldestKey, oldestAt = key, entry.expires
+		}
+	}
+	if oldestKey != "" {
+		delete(c.entries, oldestKey)
 	}
 }
 
