@@ -68,6 +68,12 @@ const (
 	// below the threshold. Only blocks are cached: caching a pass would freeze
 	// one lucky false negative in place for the whole window.
 	DefaultBlockVerdictTTL = 10 * time.Minute
+	// DefaultPassVerdictTTL caches a pass for far less time than a block. An
+	// agent re-sends near-identical turns seconds apart, and every one of those
+	// is a paid audit call, so a short window removes most of them. Keeping it
+	// short is the safety margin: a verdict that was wrong to allow expires in
+	// under a minute instead of being replayed for the whole block window.
+	DefaultPassVerdictTTL = 45 * time.Second
 	// maxBlockVerdictEntries bounds the in-process cache. Entries are small and
 	// expire quickly; the cap only exists so a flood of distinct blocked
 	// prompts cannot grow it without limit.

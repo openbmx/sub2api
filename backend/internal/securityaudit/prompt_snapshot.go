@@ -632,10 +632,41 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []strin
 		for start > 0 && isAssistantOutputSegment(normalized[start-1]) {
 			start--
 		}
-		selected = append(selected, normalized[start:index+1]...)
+		selected = append(selected, trimAssistantContext(normalized[start:index+1])...)
 		break
 	}
 	return promptSegmentTexts(selected)
+}
+
+// blockingAssistantContextRunes caps how much of the preceding model turn is
+// scanned. The prior output is carried only so a terse follow-up — "继续",
+// "实测没有" — can be understood; it is never the thing being judged, and the
+// shipped prompts tell the model as much. Sending it whole meant paying for
+// thousands of characters of text the auditor was explicitly instructed to
+// ignore, and on a long reply it dwarfed the user turn it was there to explain.
+const blockingAssistantContextRunes = 500
+
+// trimAssistantContext keeps the tail of the preceding model turn. The tail is
+// what a follow-up refers to: a user answering "实测没有" is responding to how
+// the reply ended, not how it opened.
+func trimAssistantContext(segments []promptSegment) []promptSegment {
+	budget := blockingAssistantContextRunes
+	trimmed := make([]promptSegment, 0, len(segments))
+	// Walk backwards so the budget is spent on the newest text first.
+	for index := len(segments) - 1; index >= 0 && budget > 0; index-- {
+		segment := segments[index]
+		runes := []rune(segment.text)
+		if len(runes) > budget {
+			segment.text = string(runes[len(runes)-budget:])
+		}
+		budget -= len([]rune(segment.text))
+		trimmed = append(trimmed, segment)
+	}
+	// Restore chronological order; the reversal above was only for budgeting.
+	for left, right := 0, len(trimmed)-1; left < right; left, right = left+1, right-1 {
+		trimmed[left], trimmed[right] = trimmed[right], trimmed[left]
+	}
+	return trimmed
 }
 
 func normalizedPromptSegments(values []promptSegment) []promptSegment {

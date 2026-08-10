@@ -25,16 +25,21 @@ import (
 // from retrying past a rejection — a process-local entry is enough: retries
 // land on whichever instance served the block, and at worst a multi-instance
 // deployment grants one extra attempt per instance instead of unlimited ones.
+// Passes are cached too, but only for DefaultPassVerdictTTL — long enough to
+// collapse an agent's rapid-fire near-duplicate turns, short enough that one
+// lucky false negative cannot be replayed for the whole block window.
 type blockVerdictCache struct {
 	mu      sync.Mutex
 	entries map[string]blockVerdictEntry
 	ttl     time.Duration
+	passTTL time.Duration
 	max     int
 	clock   Clock
 }
 
 type blockVerdictEntry struct {
 	result  NormalizedResult
+	kind    DecisionKind
 	expires time.Time
 }
 
@@ -48,7 +53,13 @@ func newBlockVerdictCache(ttl time.Duration, max int, clock Clock) *blockVerdict
 	if clock == nil {
 		clock = realClock{}
 	}
-	return &blockVerdictCache{entries: make(map[string]blockVerdictEntry), ttl: ttl, max: max, clock: clock}
+	passTTL := DefaultPassVerdictTTL
+	if passTTL > ttl {
+		passTTL = ttl
+	}
+	return &blockVerdictCache{
+		entries: make(map[string]blockVerdictEntry), ttl: ttl, passTTL: passTTL, max: max, clock: clock,
+	}
 }
 
 // blockVerdictKey scopes an entry to the config that produced it, so editing
@@ -62,28 +73,30 @@ func blockVerdictKey(configVersion int64, promptHash string) string {
 	return strconv.FormatInt(configVersion, 10) + ":" + hash
 }
 
-func (c *blockVerdictCache) get(configVersion int64, promptHash string) (NormalizedResult, bool) {
+func (c *blockVerdictCache) get(configVersion int64, promptHash string) (NormalizedResult, DecisionKind, bool) {
 	if c == nil {
-		return NormalizedResult{}, false
+		return NormalizedResult{}, "", false
 	}
 	key := blockVerdictKey(configVersion, promptHash)
 	if key == "" {
-		return NormalizedResult{}, false
+		return NormalizedResult{}, "", false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
 	if !ok {
-		return NormalizedResult{}, false
+		return NormalizedResult{}, "", false
 	}
 	if !c.clock.Now().Before(entry.expires) {
 		delete(c.entries, key)
-		return NormalizedResult{}, false
+		return NormalizedResult{}, "", false
 	}
-	return cloneNormalizedResult(entry.result), true
+	return cloneNormalizedResult(entry.result), entry.kind, true
 }
 
-func (c *blockVerdictCache) put(configVersion int64, promptHash string, result *NormalizedResult) {
+// put stores a verdict, choosing the lifetime by outcome: a rejection is worth
+// remembering for the full window, a pass only briefly.
+func (c *blockVerdictCache) put(configVersion int64, promptHash string, kind DecisionKind, result *NormalizedResult) {
 	if c == nil || result == nil {
 		return
 	}
@@ -91,13 +104,17 @@ func (c *blockVerdictCache) put(configVersion int64, promptHash string, result *
 	if key == "" {
 		return
 	}
+	ttl := c.passTTL
+	if kind == DecisionBlock {
+		ttl = c.ttl
+	}
 	now := c.clock.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= c.max {
 		c.evictLocked(now)
 	}
-	c.entries[key] = blockVerdictEntry{result: cloneNormalizedResult(*result), expires: now.Add(c.ttl)}
+	c.entries[key] = blockVerdictEntry{result: cloneNormalizedResult(*result), kind: kind, expires: now.Add(ttl)}
 }
 
 // evictLocked drops expired entries first. If every entry is still live the

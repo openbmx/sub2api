@@ -61,8 +61,8 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	// Replay a recent rejection of this exact prompt before spending an audit
 	// call on it. This runs ahead of the bulkhead so a retry storm cannot
 	// exhaust the concurrency budget and start failing open.
-	if cached, ok := g.blockCache.get(cfg.ConfigVersion, snapshot.PromptHash); ok {
-		return g.replayCachedBlock(ctx, cfg, snapshot, baseFields, cached, start), nil
+	if cached, kind, ok := g.blockCache.get(cfg.ConfigVersion, snapshot.PromptHash); ok {
+		return g.replayCachedVerdict(ctx, cfg, snapshot, baseFields, cached, kind, start), nil
 	}
 	select {
 	case g.global <- struct{}{}:
@@ -162,9 +162,14 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	if kind == DecisionBlock {
 		decision.ErrorCode = ErrorCodeBlocked
 		applyBlockResponse(decision, cfg, snapshot)
-		// Remember the rejection so the next attempt at the same prompt does
-		// not get a fresh roll of a nondeterministic audit model.
-		g.blockCache.put(cfg.ConfigVersion, snapshot.PromptHash, aggregated)
+	}
+	// Remember the verdict so an identical prompt does not buy another audit
+	// call: a rejection for the full window so retries cannot roll again, a
+	// pass only briefly so an agent's rapid repeats collapse without freezing a
+	// mistaken allow in place. Unavailable and invalid are never cached — those
+	// are conditions to retry, not verdicts.
+	if kind == DecisionBlock || kind == DecisionAllow || kind == DecisionFlag {
+		g.blockCache.put(cfg.ConfigVersion, snapshot.PromptHash, kind, aggregated)
 	}
 	if g.metrics != nil {
 		g.metrics.Observe(kind, g.clock.Now().Sub(start))
@@ -203,39 +208,53 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	return decision, nil
 }
 
-// replayCachedBlock serves a previously cached rejection without calling the
-// audit model. The event is still recorded and logged, so an operator can see
-// that a client retried a rejected prompt and how often, rather than the
-// retries silently disappearing.
-func (g *GuardEvaluator) replayCachedBlock(
+// replayCachedVerdict serves a previously cached verdict without calling the
+// audit model. Events are still recorded and logged, so a client hammering the
+// same prompt stays visible instead of the repeats silently disappearing.
+func (g *GuardEvaluator) replayCachedVerdict(
 	ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot,
-	baseFields map[string]any, cached NormalizedResult, start time.Time,
+	baseFields map[string]any, cached NormalizedResult, kind DecisionKind, start time.Time,
 ) *PromptDecision {
 	elapsed := g.clock.Now().Sub(start)
 	cached.LatencyMS = int(elapsed.Milliseconds())
-	decision := &PromptDecision{Kind: DecisionBlock, Result: &cached, ErrorCode: ErrorCodeBlocked, CachedBlock: true}
-	applyBlockResponse(decision, cfg, snapshot)
+	blocked := kind == DecisionBlock
+	decision := &PromptDecision{
+		Kind: kind, Result: &cached, CachedBlock: blocked,
+		AllowNextStage: !blocked,
+	}
+	if blocked {
+		decision.ErrorCode = ErrorCodeBlocked
+		applyBlockResponse(decision, cfg, snapshot)
+	}
 	if g.metrics != nil {
-		g.metrics.Observe(DecisionBlock, elapsed)
+		g.metrics.Observe(kind, elapsed)
 	}
 	if g.repo != nil {
+		// StorePassEvents still governs benign traffic, exactly as it does for a
+		// freshly derived verdict — a replay must not change what gets stored.
 		if _, err := g.repo.RecordBlocking(ctx, snapshot.Redacted(), cfg.ConfigVersion, &cached, cfg.StorePassEvents); err != nil {
 			if g.metrics != nil {
 				g.metrics.IncRecordFailed()
 			}
 			LogWarn(EventResultRecordFailed, mergeLogFields(baseFields, map[string]any{
-				"decision": DecisionBlock, "error_code": "result_record_failed",
+				"decision": kind, "error_code": "result_record_failed",
 				"stage": snapshot.Stage, "status": "failed",
 			}))
 		}
 	}
-	LogWarn(EventGuardBlocked, mergeLogFields(baseFields, map[string]any{
-		"guard_endpoint_id": cached.GuardEndpointID, "decision": DecisionBlock,
+	fields := mergeLogFields(baseFields, map[string]any{
+		"guard_endpoint_id": cached.GuardEndpointID, "decision": kind,
 		"risk_level": cached.RiskLevel, "action": cached.Action, "chunk_total": cached.ChunkTotal,
-		"latency_ms": cached.LatencyMS, "status": "blocked", "error_code": ErrorCodeBlocked,
-		"stage": snapshot.Stage, "upstream_dispatched": false, "billing_preconsumed": false,
-		"cached_block": true,
-	}))
+		"latency_ms": cached.LatencyMS, "stage": snapshot.Stage, "cached_verdict": true,
+	})
+	if blocked {
+		fields["status"], fields["error_code"] = "blocked", ErrorCodeBlocked
+		fields["upstream_dispatched"], fields["billing_preconsumed"] = false, false
+		LogWarn(EventGuardBlocked, fields)
+		return decision
+	}
+	fields["status"] = "allowed"
+	LogInfo(EventGuardAllowed, fields)
 	return decision
 }
 

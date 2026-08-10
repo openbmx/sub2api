@@ -1,6 +1,7 @@
 package securityaudit
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -26,33 +27,85 @@ func TestBlockVerdictCacheReplaysWithinTTL(t *testing.T) {
 	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
 	cache := newBlockVerdictCache(time.Minute, 16, clock)
 
-	_, ok := cache.get(7, "hash-a")
+	_, _, ok := cache.get(7, "hash-a")
 	require.False(t, ok, "empty cache must miss")
 
-	cache.put(7, "hash-a", blockResult())
-	got, ok := cache.get(7, "hash-a")
+	cache.put(7, "hash-a", DecisionBlock, blockResult())
+	got, kind, ok := cache.get(7, "hash-a")
 	require.True(t, ok, "a stored block must replay")
+	require.Equal(t, DecisionBlock, kind)
 	require.Equal(t, ActionBlock, got.Action)
 	require.Equal(t, []string{"jailbreak"}, got.Categories)
 
 	clock.now = clock.now.Add(61 * time.Second)
-	_, ok = cache.get(7, "hash-a")
+	_, _, ok = cache.get(7, "hash-a")
 	require.False(t, ok, "entry must expire once the TTL elapses")
+}
+
+// A pass is cached only to collapse an agent's rapid repeats. Giving it the
+// block window would let one mistaken allow be replayed for ten minutes, which
+// is the bypass this cache exists to prevent, inverted.
+func TestPassVerdictExpiresFarSoonerThanABlock(t *testing.T) {
+	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
+	cache := newBlockVerdictCache(10*time.Minute, 16, clock)
+
+	pass := &NormalizedResult{Decision: EventPass, RiskLevel: RiskLow, Action: ActionAllow}
+	cache.put(7, "pass-hash", DecisionAllow, pass)
+	cache.put(7, "block-hash", DecisionBlock, blockResult())
+
+	_, kind, ok := cache.get(7, "pass-hash")
+	require.True(t, ok)
+	require.Equal(t, DecisionAllow, kind, "a replayed pass must stay a pass, not become a block")
+
+	clock.now = clock.now.Add(DefaultPassVerdictTTL + time.Second)
+	_, _, ok = cache.get(7, "pass-hash")
+	require.False(t, ok, "the pass window must be short")
+	_, _, ok = cache.get(7, "block-hash")
+	require.True(t, ok, "the block must outlive it")
+}
+
+// The preceding model turn is carried for context, never judged, so only its
+// tail is worth paying for — that is the part a terse follow-up answers.
+func TestTrimAssistantContextKeepsTheTailWithinBudget(t *testing.T) {
+	long := strings.Repeat("a", 400) + "END"
+	trimmed := trimAssistantContext([]promptSegment{{text: long, role: "assistant"}})
+	require.Len(t, trimmed, 1)
+	require.LessOrEqual(t, len([]rune(trimmed[0].text)), blockingAssistantContextRunes)
+	require.True(t, strings.HasSuffix(trimmed[0].text, "END"), "the tail must survive, not the head")
+
+	short := trimAssistantContext([]promptSegment{{text: "短回复", role: "assistant"}})
+	require.Equal(t, "短回复", short[0].text, "content within budget must be untouched")
+}
+
+func TestTrimAssistantContextSpendsBudgetOnTheNewestSegments(t *testing.T) {
+	segments := []promptSegment{
+		{text: strings.Repeat("o", 400), role: "assistant"},
+		{text: strings.Repeat("n", 400), role: "assistant"},
+	}
+	trimmed := trimAssistantContext(segments)
+
+	total := 0
+	for _, segment := range trimmed {
+		total += len([]rune(segment.text))
+	}
+	require.LessOrEqual(t, total, blockingAssistantContextRunes)
+	require.Equal(t, 400, len([]rune(trimmed[len(trimmed)-1].text)), "the newest segment keeps its full text")
+	require.True(t, strings.HasPrefix(trimmed[len(trimmed)-1].text, "n"), "chronological order must be restored")
 }
 
 func TestBlockVerdictCacheIsScopedToConfigVersion(t *testing.T) {
 	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
 	cache := newBlockVerdictCache(time.Minute, 16, clock)
-	cache.put(7, "hash-a", blockResult())
+	cache.put(7, "hash-a", DecisionBlock, blockResult())
 
-	_, ok := cache.get(8, "hash-a")
+	_, _, ok := cache.get(8, "hash-a")
 	require.False(t, ok, "editing the policy must retire cached blocks")
 }
 
 func TestBlockVerdictCacheIgnoresEmptyHash(t *testing.T) {
 	cache := newBlockVerdictCache(time.Minute, 16, &stubClock{now: time.Unix(1_700_000_000, 0)})
-	cache.put(7, "", blockResult())
-	_, ok := cache.get(7, "")
+	cache.put(7, "", DecisionBlock, blockResult())
+	_, _, ok := cache.get(7, "")
 	require.False(t, ok, "a prompt with no hash must not collide with every other one")
 }
 
@@ -61,15 +114,15 @@ func TestBlockVerdictCacheIgnoresEmptyHash(t *testing.T) {
 // first one's numbers.
 func TestBlockVerdictCacheReturnsIndependentCopies(t *testing.T) {
 	cache := newBlockVerdictCache(time.Minute, 16, &stubClock{now: time.Unix(1_700_000_000, 0)})
-	cache.put(7, "hash-a", blockResult())
+	cache.put(7, "hash-a", DecisionBlock, blockResult())
 
-	first, ok := cache.get(7, "hash-a")
+	first, _, ok := cache.get(7, "hash-a")
 	require.True(t, ok)
 	first.LatencyMS = 999
 	first.Categories[0] = "mutated"
 	first.ScannerScores["jailbreak"] = 0.1
 
-	second, ok := cache.get(7, "hash-a")
+	second, _, ok := cache.get(7, "hash-a")
 	require.True(t, ok)
 	require.Zero(t, second.LatencyMS)
 	require.Equal(t, []string{"jailbreak"}, second.Categories)
@@ -79,11 +132,11 @@ func TestBlockVerdictCacheReturnsIndependentCopies(t *testing.T) {
 func TestBlockVerdictCacheEvictsWhenFull(t *testing.T) {
 	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
 	cache := newBlockVerdictCache(time.Minute, 2, clock)
-	cache.put(7, "a", blockResult())
-	cache.put(7, "b", blockResult())
-	cache.put(7, "c", blockResult())
+	cache.put(7, "a", DecisionBlock, blockResult())
+	cache.put(7, "b", DecisionBlock, blockResult())
+	cache.put(7, "c", DecisionBlock, blockResult())
 	require.LessOrEqual(t, len(cache.entries), 2, "cache must stay bounded")
-	got, ok := cache.get(7, "c")
+	got, _, ok := cache.get(7, "c")
 	require.True(t, ok, "the newest entry must survive eviction")
 	require.Equal(t, ActionBlock, got.Action)
 }
