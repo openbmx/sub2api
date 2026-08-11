@@ -93,6 +93,28 @@ func TestTrimAssistantContextSpendsBudgetOnTheNewestSegments(t *testing.T) {
 	require.True(t, strings.HasPrefix(trimmed[len(trimmed)-1].text, "n"), "chronological order must be restored")
 }
 
+// An agent turn is not a typed prompt: a 65 000-character build log arriving as
+// the latest turn is what broke the audit three ways and dominated its cost.
+func TestSampleTurnForScanKeepsBothEndsOfAnOversizedTurn(t *testing.T) {
+	head := strings.Repeat("H", 800)
+	tail := strings.Repeat("T", 800)
+	sampled := sampleTurnForScan(head + strings.Repeat("m", 60000) + tail)
+
+	require.Less(t, len([]rune(sampled)), blockingTurnScanRunes+64, "the sample must stay near the cap")
+	require.True(t, strings.HasPrefix(sampled, "H"), "an override at the top must survive")
+	require.True(t, strings.HasSuffix(sampled, "T"), "an appended directive at the bottom must survive")
+	require.Contains(t, sampled, "字符已省略", "the cut must be visible so a truncated sentence is not misread")
+	require.NotContains(t, sampled, strings.Repeat("m", 100), "the noisy middle is what gets dropped")
+}
+
+func TestSampleTurnForScanLeavesNormalPromptsIntact(t *testing.T) {
+	typed := "帮我把这个函数改成并发安全的，用 sync.Mutex 就行"
+	require.Equal(t, typed, sampleTurnForScan(typed))
+
+	exact := strings.Repeat("x", blockingTurnScanRunes)
+	require.Equal(t, exact, sampleTurnForScan(exact), "content exactly at the cap must not be cut")
+}
+
 func TestBlockVerdictCacheIsScopedToConfigVersion(t *testing.T) {
 	clock := &stubClock{now: time.Unix(1_700_000_000, 0)}
 	cache := newBlockVerdictCache(time.Minute, 16, clock)

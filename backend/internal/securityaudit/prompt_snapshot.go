@@ -7,6 +7,7 @@ import (
 	"errors"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -623,7 +624,10 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []strin
 	// A single client turn may have several text content parts. Keep it in one
 	// priority segment so every part of the latest input is scanned before the
 	// prior output begins.
-	selected := []promptSegment{{text: strings.Join(currentUserText, "\n\n"), user: true, role: "user"}}
+	selected := []promptSegment{{
+		text: sampleTurnForScan(strings.Join(currentUserText, "\n\n")),
+		user: true, role: "user",
+	}}
 	for index := latestUserStart - 1; index >= 0; index-- {
 		if !isAssistantOutputSegment(normalized[index]) {
 			continue
@@ -636,6 +640,38 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []strin
 		break
 	}
 	return promptSegmentTexts(selected)
+}
+
+// blockingTurnScanRunes caps the latest turn handed to a synchronous audit.
+//
+// An agent turn is not a typed prompt. Observed here: a 65 000-character dotnet
+// build log arriving as the latest turn, which cost roughly 25 000 uncached
+// tokens per audit and broke the audit three separate ways — the reasoning
+// budget ran out before a verdict (prompt_guard_output_truncated), the reply
+// came back unusable, or the whole evaluation timed out.
+//
+// This is a deliberate trade. Tool output is a genuine indirect-injection
+// vector, and an injection buried in the middle of a long log will now be
+// missed. It buys back the requests that were failing outright — and with
+// blocking_fail_open off, a failed audit rejects the request, so those users
+// were getting neither service nor protection.
+const blockingTurnScanRunes = 1000
+
+// sampleTurnForScan keeps both ends of an oversized turn. Injected instructions
+// sit where a reader — human or model — actually looks: an override at the top
+// or an appended directive at the bottom. The middle of a build log is repeated
+// compiler warnings. The elision marker is included so the audit model sees a
+// deliberate cut rather than a sentence that stops mid-word.
+func sampleTurnForScan(text string) string {
+	runes := []rune(text)
+	if len(runes) <= blockingTurnScanRunes {
+		return text
+	}
+	half := blockingTurnScanRunes / 2
+	omitted := len(runes) - 2*half
+	return string(runes[:half]) +
+		"\n…[中间 " + strconv.Itoa(omitted) + " 字符已省略]…\n" +
+		string(runes[len(runes)-half:])
 }
 
 // blockingAssistantContextRunes caps how much of the preceding model turn is
