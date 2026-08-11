@@ -31,17 +31,21 @@ type promptSegment struct {
 }
 
 func ExtractPromptSnapshot(req Request) (PromptSnapshot, error) {
-	return extractPromptSnapshot(req, false)
+	// Zero disables turn sampling: the asynchronous path exists to retain the
+	// complete transcript for review, so it must never be trimmed.
+	return extractPromptSnapshot(req, false, 0)
 }
 
 // ExtractBlockingPromptSnapshot builds the narrow, low-latency blocking input
 // when configured. Asynchronous auditing always uses ExtractPromptSnapshot so
 // the complete client-controlled transcript is retained for review.
-func ExtractBlockingPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, error) {
-	return extractPromptSnapshot(req, latestTurnOnly)
+//
+// turnScanRunes caps the latest turn; zero or negative disables the cap.
+func ExtractBlockingPromptSnapshot(req Request, latestTurnOnly bool, turnScanRunes int) (PromptSnapshot, error) {
+	return extractPromptSnapshot(req, latestTurnOnly, turnScanRunes)
 }
 
-func extractPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, error) {
+func extractPromptSnapshot(req Request, latestTurnOnly bool, turnScanRunes int) (PromptSnapshot, error) {
 	var document any
 	if err := json.Unmarshal(req.Body, &document); err != nil {
 		return PromptSnapshot{}, errors.New("prompt audit request JSON is invalid")
@@ -49,7 +53,7 @@ func extractPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, er
 	extracted := extractProtocolSegments(req.Protocol, document)
 	segments := normalizeSegmentsLatestUserFirst(extracted)
 	if latestTurnOnly {
-		segments = blockingSegmentsLatestUserAndPreviousOutput(extracted)
+		segments = blockingSegmentsLatestUserAndPreviousOutput(extracted, turnScanRunes)
 	}
 	if len(segments) == 0 {
 		return PromptSnapshot{}, ErrNoPromptText
@@ -605,7 +609,7 @@ func normalizeSegmentsLatestUserFirst(values []promptSegment) []string {
 // the current user turn and the nearest preceding assistant/model turn. It is
 // deliberately opt-in because full transcript scanning remains stronger at
 // finding client-controlled content placed in older or non-user messages.
-func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []string {
+func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment, turnScanRunes int) []string {
 	normalized := normalizedPromptSegments(values)
 	latestUserStart := latestUserSegmentStart(normalized)
 	if latestUserStart < 0 {
@@ -625,7 +629,7 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []strin
 	// priority segment so every part of the latest input is scanned before the
 	// prior output begins.
 	selected := []promptSegment{{
-		text: sampleTurnForScan(strings.Join(currentUserText, "\n\n")),
+		text: sampleTurnForScan(strings.Join(currentUserText, "\n\n"), turnScanRunes),
 		user: true, role: "user",
 	}}
 	for index := latestUserStart - 1; index >= 0; index-- {
@@ -642,32 +646,22 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []strin
 	return promptSegmentTexts(selected)
 }
 
-// blockingTurnScanRunes caps the latest turn handed to a synchronous audit.
-//
-// An agent turn is not a typed prompt. Observed here: a 65 000-character dotnet
-// build log arriving as the latest turn, which cost roughly 25 000 uncached
-// tokens per audit and broke the audit three separate ways — the reasoning
-// budget ran out before a verdict (prompt_guard_output_truncated), the reply
-// came back unusable, or the whole evaluation timed out.
-//
-// This is a deliberate trade. Tool output is a genuine indirect-injection
-// vector, and an injection buried in the middle of a long log will now be
-// missed. It buys back the requests that were failing outright — and with
-// blocking_fail_open off, a failed audit rejects the request, so those users
-// were getting neither service nor protection.
-const blockingTurnScanRunes = 1000
-
 // sampleTurnForScan keeps both ends of an oversized turn. Injected instructions
 // sit where a reader — human or model — actually looks: an override at the top
 // or an appended directive at the bottom. The middle of a build log is repeated
 // compiler warnings. The elision marker is included so the audit model sees a
 // deliberate cut rather than a sentence that stops mid-word.
-func sampleTurnForScan(text string) string {
-	runes := []rune(text)
-	if len(runes) <= blockingTurnScanRunes {
+//
+// A limit of zero or less disables sampling and returns the turn whole.
+func sampleTurnForScan(text string, limit int) string {
+	if limit < MinTurnScanRunes {
 		return text
 	}
-	half := blockingTurnScanRunes / 2
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	half := limit / 2
 	omitted := len(runes) - 2*half
 	return string(runes[:half]) +
 		"\n…[中间 " + strconv.Itoa(omitted) + " 字符已省略]…\n" +

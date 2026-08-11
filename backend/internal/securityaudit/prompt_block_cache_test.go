@@ -98,9 +98,9 @@ func TestTrimAssistantContextSpendsBudgetOnTheNewestSegments(t *testing.T) {
 func TestSampleTurnForScanKeepsBothEndsOfAnOversizedTurn(t *testing.T) {
 	head := strings.Repeat("H", 800)
 	tail := strings.Repeat("T", 800)
-	sampled := sampleTurnForScan(head + strings.Repeat("m", 60000) + tail)
+	sampled := sampleTurnForScan(head+strings.Repeat("m", 60000)+tail, DefaultTurnScanRunes)
 
-	require.Less(t, len([]rune(sampled)), blockingTurnScanRunes+64, "the sample must stay near the cap")
+	require.Less(t, len([]rune(sampled)), DefaultTurnScanRunes+64, "the sample must stay near the cap")
 	require.True(t, strings.HasPrefix(sampled, "H"), "an override at the top must survive")
 	require.True(t, strings.HasSuffix(sampled, "T"), "an appended directive at the bottom must survive")
 	require.Contains(t, sampled, "字符已省略", "the cut must be visible so a truncated sentence is not misread")
@@ -109,10 +109,32 @@ func TestSampleTurnForScanKeepsBothEndsOfAnOversizedTurn(t *testing.T) {
 
 func TestSampleTurnForScanLeavesNormalPromptsIntact(t *testing.T) {
 	typed := "帮我把这个函数改成并发安全的，用 sync.Mutex 就行"
-	require.Equal(t, typed, sampleTurnForScan(typed))
+	require.Equal(t, typed, sampleTurnForScan(typed, DefaultTurnScanRunes))
 
-	exact := strings.Repeat("x", blockingTurnScanRunes)
-	require.Equal(t, exact, sampleTurnForScan(exact), "content exactly at the cap must not be cut")
+	exact := strings.Repeat("x", DefaultTurnScanRunes)
+	require.Equal(t, exact, sampleTurnForScan(exact, DefaultTurnScanRunes), "content exactly at the cap must not be cut")
+}
+
+// An operator who turns sampling off must get the whole turn, and the async
+// path relies on the same zero-means-off behaviour to keep full transcripts.
+func TestSampleTurnForScanHonoursTheConfiguredLimit(t *testing.T) {
+	huge := strings.Repeat("x", 5000)
+	require.Equal(t, huge, sampleTurnForScan(huge, 0), "zero disables sampling")
+	require.Equal(t, huge, sampleTurnForScan(huge, -1), "a negative limit disables sampling")
+
+	tight := sampleTurnForScan(huge, MinTurnScanRunes)
+	require.Less(t, len([]rune(tight)), MinTurnScanRunes+64, "a smaller limit must actually bind")
+
+	loose := sampleTurnForScan(huge, 4000)
+	require.Greater(t, len([]rune(loose)), len([]rune(tight)), "a larger limit must keep more text")
+}
+
+func TestEffectiveTurnScanRunesFallsBackAndHonoursOptOut(t *testing.T) {
+	require.Equal(t, DefaultTurnScanRunes, ActiveConfig{}.EffectiveTurnScanRunes(), "a config predating the field keeps the default")
+	require.Equal(t, DefaultTurnScanRunes, ActiveConfig{TurnScanRunes: 10}.EffectiveTurnScanRunes(), "below the minimum is nonsense, not an opt-out")
+	require.Equal(t, DefaultTurnScanRunes, ActiveConfig{TurnScanRunes: MaxTurnScanRunes + 1}.EffectiveTurnScanRunes())
+	require.Equal(t, 4000, ActiveConfig{TurnScanRunes: 4000}.EffectiveTurnScanRunes())
+	require.Equal(t, 0, ActiveConfig{TurnScanRunes: -1}.EffectiveTurnScanRunes(), "-1 is the explicit opt-out")
 }
 
 func TestBlockVerdictCacheIsScopedToConfigVersion(t *testing.T) {

@@ -50,6 +50,23 @@ const (
 	MaxBlockHTTPStatus     = 499
 	MaxBlockMessageRunes   = 500
 
+	// DefaultTurnScanRunes caps the latest turn handed to a synchronous audit.
+	//
+	// An agent turn is not a typed prompt. Observed on a live deployment: a
+	// 65 000-character dotnet build log arriving as the turn to audit, costing
+	// roughly 25 000 uncached tokens per call and breaking the audit three ways
+	// — the reasoning budget ran out before a verdict, the reply came back
+	// unusable, or the evaluation timed out.
+	//
+	// Oversized turns are sampled head and tail rather than cut short, because
+	// that is where injected instructions sit. It is still a trade: tool output
+	// is a real indirect-injection vector and an injection buried mid-log is
+	// missed. Raise this when false negatives matter more than cost; lower it
+	// when the reverse holds. Zero disables sampling entirely.
+	DefaultTurnScanRunes = 1000
+	MinTurnScanRunes     = 200
+	MaxTurnScanRunes     = 100000
+
 	// DefaultNodeConcurrency caps in-flight audits per node. It used to be a
 	// hardcoded 16, which made a saturated node indistinguishable from a broken
 	// one: the 17th request fails in single-digit milliseconds with no endpoint
@@ -156,11 +173,14 @@ type storageConfig struct {
 	BlockHTTPStatus int    `json:"block_http_status"`
 	BlockMessage    string `json:"block_message"`
 	// NodeConcurrency caps simultaneous audits per node. Zero means default.
-	NodeConcurrency int       `json:"node_concurrency"`
-	ConfigVersion   int64     `json:"config_version"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	UpdatedBy       int64     `json:"updated_by"`
-	ChangeSummary   string    `json:"change_summary"`
+	NodeConcurrency int `json:"node_concurrency"`
+	// TurnScanRunes caps the latest turn sent to a blocking audit. Zero means
+	// default; -1 is stored when an operator explicitly disables sampling.
+	TurnScanRunes int       `json:"turn_scan_runes"`
+	ConfigVersion int64     `json:"config_version"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	UpdatedBy     int64     `json:"updated_by"`
+	ChangeSummary string    `json:"change_summary"`
 }
 
 type ActiveEndpoint struct {
@@ -208,6 +228,7 @@ type ActiveConfig struct {
 	BlockHTTPStatus        int
 	BlockMessage           string
 	NodeConcurrency        int
+	TurnScanRunes          int
 	ConfigVersion          int64
 	UpdatedAt              time.Time
 	UpdatedBy              int64
@@ -255,6 +276,7 @@ type PublicConfig struct {
 	BlockHTTPStatus int       `json:"block_http_status"`
 	BlockMessage    string    `json:"block_message"`
 	NodeConcurrency int       `json:"node_concurrency"`
+	TurnScanRunes   int       `json:"turn_scan_runes"`
 	ConfigVersion   int64     `json:"config_version"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	UpdatedBy       int64     `json:"updated_by"`
@@ -297,6 +319,8 @@ type UpdateConfigRequest struct {
 	BlockHTTPStatus int    `json:"block_http_status"`
 	BlockMessage    string `json:"block_message"`
 	NodeConcurrency int    `json:"node_concurrency"`
+	// TurnScanRunes: zero keeps the stored value, -1 disables sampling.
+	TurnScanRunes int `json:"turn_scan_runes"`
 }
 
 func DefaultStorageConfig() storageConfig {
@@ -526,6 +550,12 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 	if req.NodeConcurrency != 0 && (req.NodeConcurrency < MinNodeConcurrency || req.NodeConcurrency > MaxNodeConcurrency) {
 		return infraerrors.BadRequest("prompt_audit_invalid_node_concurrency", "单节点并发上限超出允许范围")
 	}
+	// -1 is the explicit "scan the whole turn" choice, so only values between
+	// zero and the minimum are actually nonsense.
+	if req.TurnScanRunes != 0 && req.TurnScanRunes != -1 &&
+		(req.TurnScanRunes < MinTurnScanRunes || req.TurnScanRunes > MaxTurnScanRunes) {
+		return infraerrors.BadRequest("prompt_audit_invalid_turn_scan_runes", "单轮送审字符上限超出允许范围")
+	}
 	for _, endpoint := range req.Endpoints {
 		if endpoint.TimeoutMS < MinTimeoutMS || endpoint.TimeoutMS > MaxTimeoutMS {
 			return infraerrors.BadRequest("prompt_audit_invalid_timeout", "审计节点超时超出允许范围")
@@ -587,6 +617,20 @@ func validateBlockResponse(status int, message string) error {
 		return infraerrors.BadRequest("prompt_audit_block_message_too_long", "拦截提示文案过长")
 	}
 	return nil
+}
+
+// EffectiveTurnScanRunes returns the latest-turn cap. A stored -1 is an
+// operator explicitly turning sampling off, and is passed through as 0 so the
+// snapshot builder leaves the turn whole; anything else out of range falls back
+// to the default, which is also what a config saved before this field gets.
+func (cfg ActiveConfig) EffectiveTurnScanRunes() int {
+	if cfg.TurnScanRunes < 0 {
+		return 0
+	}
+	if cfg.TurnScanRunes < MinTurnScanRunes || cfg.TurnScanRunes > MaxTurnScanRunes {
+		return DefaultTurnScanRunes
+	}
+	return cfg.TurnScanRunes
 }
 
 // EffectiveNodeConcurrency returns the per-node in-flight cap, falling back to
@@ -668,6 +712,7 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 		BlockThreshold:            cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		BlockHTTPStatus: blockStatus, BlockMessage: blockMessage,
 		NodeConcurrency: ActiveConfig{NodeConcurrency: cfg.NodeConcurrency}.EffectiveNodeConcurrency(),
+		TurnScanRunes:   ActiveConfig{TurnScanRunes: cfg.TurnScanRunes}.EffectiveTurnScanRunes(),
 		ConfigVersion:   cfg.ConfigVersion,
 		UpdatedAt:       cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}
@@ -683,8 +728,8 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 		CustomPrompt: cfg.CustomPrompt, BlockThreshold: cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		BlockHTTPStatus: cfg.BlockHTTPStatus, BlockMessage: cfg.BlockMessage,
-		NodeConcurrency: cfg.NodeConcurrency,
-		Endpoints:       make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
+		NodeConcurrency: cfg.NodeConcurrency, TurnScanRunes: cfg.TurnScanRunes,
+		Endpoints: make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
 	}
 	for _, ep := range cfg.Endpoints {
 		token := ""

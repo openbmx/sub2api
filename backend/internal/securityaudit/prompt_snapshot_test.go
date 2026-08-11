@@ -326,7 +326,7 @@ func TestBlockingPromptSnapshotLimitsInputToLatestUserAndPreviousOutput(t *testi
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			snapshot, err := ExtractBlockingPromptSnapshot(Request{Protocol: tt.protocol, Body: []byte(tt.body)}, true)
+			snapshot, err := ExtractBlockingPromptSnapshot(Request{Protocol: tt.protocol, Body: []byte(tt.body)}, true, 0)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, snapshot.ScanText)
 			for _, omitted := range tt.omitted {
@@ -361,7 +361,7 @@ func TestResponsesOutputTextIncludedInFullAndLatestTurnSnapshots(t *testing.T) {
 	require.Contains(t, full.FullPrompt, "captured previous assistant output")
 	require.Equal(t, 3, full.MessageCount)
 
-	latestTurn, err := ExtractBlockingPromptSnapshot(req, true)
+	latestTurn, err := ExtractBlockingPromptSnapshot(req, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, "captured latest user input"+promptAuditPrioritySeparator+"captured previous assistant output", latestTurn.ScanText)
 	require.Equal(t, 2, latestTurn.MessageCount)
@@ -372,14 +372,14 @@ func TestBlockingPromptSnapshotPreservesFullScopeByDefaultAndWithoutUserInput(t 
 	req := Request{Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"system","content":"system instruction"},{"role":"user","content":"older user input"},{"role":"assistant","content":"previous output"},{"role":"user","content":"latest user input"}]}`)}
 	full, err := ExtractPromptSnapshot(req)
 	require.NoError(t, err)
-	defaultBlocking, err := ExtractBlockingPromptSnapshot(req, false)
+	defaultBlocking, err := ExtractBlockingPromptSnapshot(req, false, 0)
 	require.NoError(t, err)
 	require.Equal(t, full, defaultBlocking)
 
 	noUser := Request{Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"system","content":"system instruction"},{"role":"assistant","content":"assistant output"}]}`)}
 	fullWithoutUser, err := ExtractPromptSnapshot(noUser)
 	require.NoError(t, err)
-	narrowWithoutUser, err := ExtractBlockingPromptSnapshot(noUser, true)
+	narrowWithoutUser, err := ExtractBlockingPromptSnapshot(noUser, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, fullWithoutUser, narrowWithoutUser)
 }

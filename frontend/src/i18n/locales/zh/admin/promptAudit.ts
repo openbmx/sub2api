@@ -63,6 +63,8 @@ export default {
       title: '审计策略', description: '配置适用分组、九类输入风险、Worker 与队列边界。', scope: '适用范围', allGroups: '全部分组', selectedGroups: '指定分组',
       searchGroups: '搜索分组', noGroups: '没有匹配分组', missingGroups: '配置中包含已删除的分组 ID', selectedCount: '已选择 {count} 个分组',
       scanners: 'Qwen3Guard 输入风险分类', workerCount: 'Worker 数量', queueCapacity: '持久队列容量', strategy: '节点策略', strategyHint: '按配置顺序优先尝试，必要时故障切换。',
+      turnScanRunes: '单轮送审字符上限',
+      turnScanRunesHint: '超过该长度的一轮内容只送首尾各一半，中间标注省略字符数（200-100000，填 -1 表示不截断整轮送审）。agent 的工具输出动辄数万字符，整段送审既贵又容易撑爆审计模型；代价是藏在中段的注入会被漏掉。',
       nodeConcurrency: '单节点并发上限',
       nodeConcurrencyHint: '同一节点最多同时处理多少次审计（1-256）。超出的请求会被立即拒绝并计入「并发拒绝」，表现和节点故障一样。总超时越大，每个槽位被占用的时间越长，越容易触顶。',
       scannersInert: '当前审核提示词只返回置信度、不返回分类，因此这些开关不会影响 custom_json 节点的判定。需要按分类控制请点击下方「切换到分类版模板」。',

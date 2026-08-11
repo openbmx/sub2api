@@ -70,6 +70,11 @@
           <input :value="draft.queue_capacity" type="number" min="1" max="100000" class="input mt-1.5 w-full" :aria-label="t('admin.promptAudit.policy.queueCapacity')" @input="patch({ queue_capacity: Number(($event.target as HTMLInputElement).value) })" />
         </label>
         <label class="block text-sm text-gray-700 dark:text-dark-200">
+          <span>{{ t('admin.promptAudit.policy.turnScanRunes') }}</span>
+          <input :value="draft.turn_scan_runes" type="number" min="-1" max="100000" class="input mt-1.5 w-full" :aria-label="t('admin.promptAudit.policy.turnScanRunes')" @input="patch({ turn_scan_runes: Number(($event.target as HTMLInputElement).value) })" />
+          <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.policy.turnScanRunesHint') }}</span>
+        </label>
+        <label class="block text-sm text-gray-700 dark:text-dark-200">
           <span>{{ t('admin.promptAudit.policy.nodeConcurrency') }}</span>
           <input :value="draft.node_concurrency" type="number" min="1" max="256" class="input mt-1.5 w-full" :aria-label="t('admin.promptAudit.policy.nodeConcurrency')" @input="patch({ node_concurrency: Number(($event.target as HTMLInputElement).value) })" />
           <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.policy.nodeConcurrencyHint') }}</span>

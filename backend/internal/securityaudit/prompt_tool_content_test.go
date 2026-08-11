@@ -91,7 +91,7 @@ func TestBlockingSnapshotKeepsLatestTurnToolResult(t *testing.T) {
 		{"role":"assistant","content":[{"type":"text","text":"PRIOR_OUTPUT"}]},
 		{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"LATEST_TOOL_RESULT"}]}
 	]}`
-	snapshot, err := ExtractBlockingPromptSnapshot(Request{Protocol: "anthropic_messages", Body: []byte(body), Stage: "http"}, true)
+	snapshot, err := ExtractBlockingPromptSnapshot(Request{Protocol: "anthropic_messages", Body: []byte(body), Stage: "http"}, true, 0)
 	require.NoError(t, err)
 	require.Contains(t, snapshot.ScanText, "LATEST_TOOL_RESULT")
 }

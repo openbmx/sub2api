@@ -81,6 +81,9 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     // 0 tells the server to keep the stored value, so an empty field does not
     // silently reset the limit to the default.
     node_concurrency: Number(draft.node_concurrency) || 0,
+    // -1 must survive as the explicit "scan the whole turn" choice; only an
+    // empty field should mean "keep what is stored".
+    turn_scan_runes: Number.isFinite(Number(draft.turn_scan_runes)) ? Number(draft.turn_scan_runes) : 0,
     scanners: [...draft.scanners],
     all_groups: draft.all_groups,
     group_ids: draft.all_groups ? [] : [...draft.group_ids].sort((a, b) => a - b),

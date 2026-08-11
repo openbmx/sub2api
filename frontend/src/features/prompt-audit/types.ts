@@ -34,6 +34,8 @@ export interface PromptAuditConfig {
   worker_count: number
   queue_capacity: number
   node_concurrency: number
+  /** Latest-turn scan cap; -1 disables sampling and scans the turn whole. */
+  turn_scan_runes: number
   scanners: string[]
   all_groups: boolean
   group_ids: number[]
@@ -69,6 +71,8 @@ export interface PromptAuditUpdateRequest {
   worker_count: number
   queue_capacity: number
   node_concurrency: number
+  /** Latest-turn scan cap; -1 disables sampling and scans the turn whole. */
+  turn_scan_runes: number
   scanners: string[]
   all_groups: boolean
   group_ids: number[]
@@ -179,6 +183,8 @@ export interface PromptAuditRuntime {
   worker_heartbeat_at?: string
   queue_capacity: number
   node_concurrency: number
+  /** Latest-turn scan cap; -1 disables sampling and scans the turn whole. */
+  turn_scan_runes: number
   queue: PromptQueueStats
   processed_total: number
   failed_total: number
