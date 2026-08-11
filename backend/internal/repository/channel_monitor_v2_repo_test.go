@@ -107,6 +107,25 @@ func TestChannelMonitorV2ErrorAggregationCountsFinalUserErrorsOnly(t *testing.T)
 	require.Contains(t, query, "current_error.created_at >= $1 - interval '90 minutes'")
 }
 
+// A prompt-audit block, a quota refusal, a billing refusal: the gateway answered
+// on its own and never called the channel, so none of them are evidence about
+// channel health. Ops v1 already excludes is_business_limited from its SLA
+// numerator (migration 033); V2 recomputes error_rate from its own tables and
+// would otherwise count these as upstream_forbidden.
+func TestChannelMonitorV2ErrorAggregationExcludesGatewayRefusals(t *testing.T) {
+	require.Contains(t, channelMonitorV2ErrorAggregationSQL, channelMonitorV2ExcludeLocalRefusal("current_error"))
+
+	// Phase-scoped on purpose. Routing capacity limits are business-limited too,
+	// but they DO describe the channel and must keep feeding
+	// account_pool_unavailable / rate_or_capacity, so a blanket exclusion is wrong.
+	require.Contains(t, channelMonitorV2ExcludeLocalRefusal("m"), "m.error_phase = 'request'")
+	require.NotContains(t, channelMonitorV2ErrorAggregationSQL, "AND NOT current_error.is_business_limited\n")
+
+	// The predicate is alias-parameterised because loadErrorDetails applies it to
+	// both current_error and the newer-row anti-join.
+	require.Contains(t, channelMonitorV2ExcludeLocalRefusal("newer"), "newer.is_business_limited")
+}
+
 func TestChannelMonitorV2UsageSuccessExcludesCyberBillingRows(t *testing.T) {
 	for _, query := range []string{channelMonitorV2UsageMetricsSQL, channelMonitorV2UserMetricsSQL} {
 		require.Contains(t, query, "COALESCE(ul.request_type, 0) NOT IN (4, 6)")

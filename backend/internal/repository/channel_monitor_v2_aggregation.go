@@ -238,6 +238,14 @@ WHEN ` + column + ` <= 300000 THEN 300000 WHEN ` + column + ` <= 600000 THEN 600
 ELSE 2147483647 END`
 }
 
+// channelMonitorV2ExcludeLocalRefusal builds the predicate that drops refusals
+// the gateway issued itself. Both this file's aggregation SQL and the ad-hoc
+// query in loadErrorDetails must apply it, against their own table alias;
+// TestChannelMonitorV2ErrorAggregationExcludesGatewayRefusals pins them together.
+func channelMonitorV2ExcludeLocalRefusal(alias string) string {
+	return "NOT (" + alias + ".is_business_limited AND " + alias + ".error_phase = 'request')"
+}
+
 // Error dedup lookback: request_id branch is bounded by chunk start minus 90
 // minutes so candidate_ids never forces a full-history scan of ops_error_logs.
 const channelMonitorV2ErrorAggregationSQL = `
@@ -268,6 +276,14 @@ WITH dedup AS (
       )
     )
     AND NOT current_error.is_count_tokens
+    -- A refusal the gateway issued itself -- prompt-audit block, quota, billing --
+    -- never reached the channel, so it says nothing about channel health. Ops v1
+    -- already keeps these out of its SLA numerator (see migration 033); V2 counts
+    -- the same rows here unless they are excluded. Scoped to phase 'request' on
+    -- purpose: routing capacity limits are business-limited too, but those DO
+    -- describe the channel and must keep feeding account_pool_unavailable /
+    -- rate_or_capacity.
+    AND NOT (current_error.is_business_limited AND current_error.error_phase = 'request')
     AND (COALESCE(current_error.status_code, 0) >= 400 OR current_error.error_type = 'cyber_policy')
   ORDER BY COALESCE(NULLIF(request_id, ''), 'error:' || id::text), created_at DESC, id DESC
 ), classified AS (

@@ -703,11 +703,17 @@ func (r *channelMonitorV2Repository) loadErrorDetails(ctx context.Context, filte
 		"current_error.created_at >= $1",
 		"current_error.created_at < $2",
 		"NOT current_error.is_count_tokens",
+		// Keep in lockstep with channelMonitorV2ErrorAggregationSQL: gateway-issued
+		// refusals are not channel evidence, and the same predicate has to hold in
+		// the "is there a newer error" anti-join so an excluded row cannot suppress
+		// a genuine channel error recorded earlier for the same request.
+		channelMonitorV2ExcludeLocalRefusal("current_error"),
 		"(COALESCE(current_error.status_code, 0) >= 400 OR current_error.error_type = 'cyber_policy')",
 		`(NULLIF(current_error.request_id, '') IS NULL OR NOT EXISTS (
 				SELECT 1 FROM ops_error_logs newer
 				WHERE newer.request_id = current_error.request_id
 				  AND NOT newer.is_count_tokens
+				  AND ` + channelMonitorV2ExcludeLocalRefusal("newer") + `
 				  AND (COALESCE(newer.status_code, 0) >= 400 OR newer.error_type = 'cyber_policy')
 				  AND (newer.created_at, newer.id) > (current_error.created_at, current_error.id)
 		))`,
