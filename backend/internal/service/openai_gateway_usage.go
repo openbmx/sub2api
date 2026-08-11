@@ -164,24 +164,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageOutputTokens:   result.Usage.ImageOutputTokens,
 	}
 
-	// Get rate multiplier
-	multiplier := 1.0
-	if s.cfg != nil {
-		multiplier = s.cfg.Default.RateMultiplier
-	}
-	if apiKey.GroupID != nil && apiKey.Group != nil {
-		multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
-	}
-	// token 倍率叠加高峰因子（token 计费含图片 token，图片按次倍率不受影响）。
-	// 高峰因子按请求级 PricingAt 现算（与利润门 D 同源同刻，跨峰谷请求不中途
-	// 变价）；未装配 PricingAt 的路径回退记录时刻，保持既有行为。不并入上面的
-	// Resolve，以免污染 user:group 倍率缓存。
-	baseMultiplier := multiplier
-	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, openAIUsagePricingAt(input))
-	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
-
-	var cost *CostBreakdown
-	var err error
+	// 确定计费模型。必须早于倍率计算：分组的模型级倍率要按计费模型查表叠乘，
+	// 而本块只依赖 result/input，与倍率无关，因此上移是纯顺序调整、不改语义。
 	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
 	if result.BillingModel != "" {
 		billingModel = strings.TrimSpace(result.BillingModel)
@@ -200,6 +184,39 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		result.UpstreamModel,
 		result.Model,
 	)
+
+	// Get rate multiplier
+	multiplier := 1.0
+	if s.cfg != nil {
+		multiplier = s.cfg.Default.RateMultiplier
+	}
+	if apiKey.GroupID != nil && apiKey.Group != nil {
+		multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
+	}
+	// token 倍率叠加高峰因子（token 计费含图片 token，图片按次倍率不受影响）。
+	// 高峰因子按请求级 PricingAt 现算（与利润门 D 同源同刻，跨峰谷请求不中途
+	// 变价）；未装配 PricingAt 的路径回退记录时刻，保持既有行为。不并入上面的
+	// Resolve，以免污染 user:group 倍率缓存。
+	baseMultiplier := multiplier
+	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, openAIUsagePricingAt(input))
+	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
+	// 模型级倍率按首选计费模型查表（billingModels[0] 即此处 billingModel 的 trim 结果），
+	// 叠乘在高峰因子之后，对 token / 图片按次 / 视频三条支路同时生效。
+	//
+	// 刻意不跟随下游的候选回退（calculateOpenAIRecordUsageCost 在首选模型查无价时会
+	// 顺延试下一个候选）：那是异常路径，且查无价的模型上几乎不会配倍率；倍率在计费
+	// 前就定死，换来 usage_logs.rate_multiplier 与实际扣费严格一致。
+	//
+	// websearch / audio 走的是 baseMultiplier，属按次/按时长的能力计费、没有模型维度，
+	// 不参与叠乘——否则「给某模型配倍率」会意外改掉网页搜索的单价。
+	if modelFactor := apiKey.Group.ModelMultiplierFor(billingModel); modelFactor != 1.0 {
+		multiplier *= modelFactor
+		imageMultiplier *= modelFactor
+		videoMultiplier *= modelFactor
+	}
+
+	var cost *CostBreakdown
+	var err error
 	serviceTier := ""
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)

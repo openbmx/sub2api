@@ -1022,6 +1022,18 @@ export default {
         peakMultiplier: 'Peak multiplier',
         multiplierHint: 'Applies to token billing multiplier; image tokens in token billing are also affected. 0 means peak token requests are billed at 0x.'
       },
+      modelRateMultipliers: {
+        title: 'Per-model extra multiplier',
+        description: 'Stacks on top of the effective group multiplier (including per-user overrides) and the peak factor. Model names support exact match and a single trailing * prefix wildcard (e.g. claude-opus-4*); exact wins, then the longest prefix. Applies to token / image / video billing; web search and audio are priced per call or per duration and are unaffected. Leave empty for no stacking; 0 makes that model free.',
+        modelPlaceholder: 'Model name or prefix wildcard, e.g. claude-opus-4*',
+        addRow: 'Add model multiplier',
+        errors: {
+          invalidWildcard: 'Model name {model} supports only a single trailing * wildcard (e.g. claude-opus-4*)',
+          invalidMultiplier: 'The multiplier for {model} must be a finite number >= 0',
+          duplicateModel: 'Model {model} has a duplicate multiplier entry',
+          tooManyRows: 'Model multiplier entries cannot exceed {max}'
+        }
+      },
       profitControl: {
         enable: 'Enable profit control',
         enabledHint: 'Scheduling only admits accounts whose account multiplier ≤ the request\'s effective downstream multiplier × (1 − min margin − safety buffer). Account multipliers may be maintained manually or synchronized from probes; existing ordering, stickiness and breakers keep working among qualified accounts. Image/video scheduling is not covered yet.',

@@ -1191,6 +1191,58 @@
           </div>
         </div>
 
+        <!-- 按模型额外倍率（叠乘在分组有效倍率与高峰因子之上） -->
+        <div class="border-t pt-4" data-testid="create-model-rate-multipliers">
+          <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.modelRateMultipliers.title") }}
+          </p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t("admin.groups.modelRateMultipliers.description") }}
+          </p>
+          <div class="mt-3 space-y-2">
+            <div
+              v-for="(row, index) in createForm.model_rate_multipliers"
+              :key="index"
+              class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,8rem)_auto] sm:items-center"
+            >
+              <input
+                v-model="row.model"
+                type="text"
+                class="input font-mono"
+                :placeholder="t('admin.groups.modelRateMultipliers.modelPlaceholder')"
+                :data-testid="`create-model-rate-model-${index}`"
+              />
+              <input
+                v-model.number="row.multiplier"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="1"
+                :data-testid="`create-model-rate-multiplier-${index}`"
+              />
+              <button
+                type="button"
+                class="text-sm text-red-600 hover:text-red-700 dark:text-red-400"
+                :data-testid="`create-model-rate-remove-${index}`"
+                @click="createForm.model_rate_multipliers.splice(index, 1)"
+              >
+                {{ t("common.delete") }}
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="mt-2 text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400"
+            data-testid="create-model-rate-add"
+            @click="
+              createForm.model_rate_multipliers.push({ model: '', multiplier: 1 })
+            "
+          >
+            + {{ t("admin.groups.modelRateMultipliers.addRow") }}
+          </button>
+        </div>
+
         <!-- 分组利润控制（五个平台 token 请求） -->
         <div v-if="isProfitControlPlatform(createForm.platform)" class="border-t pt-4">
           <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -2898,6 +2950,58 @@
           </div>
         </div>
 
+        <!-- 按模型额外倍率（叠乘在分组有效倍率与高峰因子之上） -->
+        <div class="border-t pt-4" data-testid="edit-model-rate-multipliers">
+          <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.modelRateMultipliers.title") }}
+          </p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t("admin.groups.modelRateMultipliers.description") }}
+          </p>
+          <div class="mt-3 space-y-2">
+            <div
+              v-for="(row, index) in editForm.model_rate_multipliers"
+              :key="index"
+              class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,8rem)_auto] sm:items-center"
+            >
+              <input
+                v-model="row.model"
+                type="text"
+                class="input font-mono"
+                :placeholder="t('admin.groups.modelRateMultipliers.modelPlaceholder')"
+                :data-testid="`edit-model-rate-model-${index}`"
+              />
+              <input
+                v-model.number="row.multiplier"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="1"
+                :data-testid="`edit-model-rate-multiplier-${index}`"
+              />
+              <button
+                type="button"
+                class="text-sm text-red-600 hover:text-red-700 dark:text-red-400"
+                :data-testid="`edit-model-rate-remove-${index}`"
+                @click="editForm.model_rate_multipliers.splice(index, 1)"
+              >
+                {{ t("common.delete") }}
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="mt-2 text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400"
+            data-testid="edit-model-rate-add"
+            @click="
+              editForm.model_rate_multipliers.push({ model: '', multiplier: 1 })
+            "
+          >
+            + {{ t("admin.groups.modelRateMultipliers.addRow") }}
+          </button>
+        </div>
+
         <!-- 分组利润控制（五个平台 token 请求） -->
         <div v-if="isProfitControlPlatform(editForm.platform)" class="border-t pt-4">
           <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -4390,6 +4494,13 @@ import {
   type MessagesDispatchMappingRow,
 } from "./groupsMessagesDispatch";
 import {
+  MAX_MODEL_RATE_MULTIPLIER_ROWS,
+  modelRateMultiplierRowsToConfig,
+  modelRateMultipliersToRows,
+  validateModelRateMultiplierRows,
+  type ModelRateMultiplierRow,
+} from "./groupsModelRateMultipliers";
+import {
   buildModelsListConfig,
   createModelsListState as createInitialModelsListState,
   invertModelsListSelection,
@@ -4930,6 +5041,8 @@ const createForm = reactive({
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
   video_model_prices: createVideoModelPricesForm(),
+  // 按模型额外倍率（叠乘在分组有效倍率与高峰因子之上）
+  model_rate_multipliers: [] as ModelRateMultiplierRow[],
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
   search_price_per_1k: null as number | null,
@@ -5289,6 +5402,8 @@ const editForm = reactive({
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
   video_model_prices: createVideoModelPricesForm(),
+  // 按模型额外倍率（叠乘在分组有效倍率与高峰因子之上）
+  model_rate_multipliers: [] as ModelRateMultiplierRow[],
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
   search_price_per_1k: null as number | null,
@@ -5744,6 +5859,7 @@ const closeCreateModal = () => {
   createForm.video_price_720p = null;
   createForm.video_price_1080p = null;
   createForm.video_model_prices = createVideoModelPricesForm();
+  createForm.model_rate_multipliers = [];
   createForm.web_search_price_per_call = null;
   createForm.search_price_per_1k = null;
   createForm.audio_realtime_price_per_min = null;
@@ -5816,6 +5932,24 @@ const validateProfitControlForm = (form: ProfitControlFormState): boolean => {
   return true;
 };
 
+// 提交前校验模型倍率行。规则与后端 ValidateModelRateMultipliers 一致，
+// 目的是把错误提示留在表单里，而不是等接口 400 回来才知道哪一行写错了。
+const validateModelRateMultiplierForm = (
+  rows: ModelRateMultiplierRow[],
+): boolean => {
+  const result = validateModelRateMultiplierRows(rows);
+  if (result.valid) {
+    return true;
+  }
+  appStore.showError(
+    t(`admin.groups.modelRateMultipliers.errors.${result.reason}`, {
+      model: result.model ?? "",
+      max: MAX_MODEL_RATE_MULTIPLIER_ROWS,
+    }),
+  );
+  return false;
+};
+
 const handleCreateGroup = async () => {
   if (!createForm.name.trim()) {
     appStore.showError(t("admin.groups.nameRequired"));
@@ -5831,14 +5965,21 @@ const handleCreateGroup = async () => {
   if (!validateProfitControlForm(createForm)) {
     return;
   }
+  if (!validateModelRateMultiplierForm(createForm.model_rate_multipliers)) {
+    return;
+  }
   submitting.value = true;
   try {
     const {
       video_model_prices: _createFormVideoModelPrices,
+      model_rate_multipliers: _createFormModelRateMultipliers,
       ...createGroupForm
     } = createForm;
     const videoModelPrices = serializeVideoModelPrices(
       createForm.video_model_prices,
+    );
+    const modelRateMultipliers = modelRateMultiplierRowsToConfig(
+      createForm.model_rate_multipliers,
     );
     // 构建请求数据，包含模型路由配置
     const requestData = {
@@ -5854,6 +5995,9 @@ const handleCreateGroup = async () => {
       ),
       ...(Object.keys(videoModelPrices).length > 0
         ? { video_model_prices: videoModelPrices }
+        : {}),
+      ...(Object.keys(modelRateMultipliers).length > 0
+        ? { model_rate_multipliers: modelRateMultipliers }
         : {}),
       model_routing: convertRoutingRulesToApiFormat(
         createModelRoutingRules.value,
@@ -5984,6 +6128,9 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.video_model_prices = createVideoModelPricesForm(
     group.video_model_prices,
   );
+  editForm.model_rate_multipliers = modelRateMultipliersToRows(
+    group.model_rate_multipliers,
+  );
   editForm.web_search_price_per_call = group.web_search_price_per_call ?? null;
   editForm.search_price_per_1k = group.search_price_per_1k ?? null;
   editForm.audio_realtime_price_per_min = group.audio_realtime_price_per_min ?? null;
@@ -6069,6 +6216,7 @@ const closeEditModal = () => {
   editForm.video_price_720p = null;
   editForm.video_price_1080p = null;
   editForm.video_model_prices = createVideoModelPricesForm();
+  editForm.model_rate_multipliers = [];
   editForm.web_search_price_per_call = null;
   editForm.search_price_per_1k = null;
   editForm.audio_realtime_price_per_min = null;
@@ -6095,6 +6243,9 @@ const handleUpdateGroup = async () => {
   if (!validateProfitControlForm(editForm)) {
     return;
   }
+  if (!validateModelRateMultiplierForm(editForm.model_rate_multipliers)) {
+    return;
+  }
 
   submitting.value = true;
   try {
@@ -6112,6 +6263,11 @@ const handleUpdateGroup = async () => {
       ),
       video_model_prices: serializeVideoModelPrices(
         editForm.video_model_prices,
+      ),
+      // 始终下发（空对象即"清空全部模型倍率"）。编辑表单持有完整状态，
+      // 省略该字段会被后端当成"不修改"，导致删掉最后一行后保存不生效。
+      model_rate_multipliers: modelRateMultiplierRowsToConfig(
+        editForm.model_rate_multipliers,
       ),
       fallback_group_id:
         editForm.fallback_group_id === null ? 0 : editForm.fallback_group_id,

@@ -1019,6 +1019,18 @@ export default {
         peakMultiplier: '高峰倍率',
         multiplierHint: '作用于 token 计费倍率；token 计费的图片 token 同样适用，0 表示高峰 token 请求按 0 倍计费'
       },
+      modelRateMultipliers: {
+        title: '按模型额外倍率',
+        description: '在分组有效倍率（含用户专属覆盖）与高峰因子之上，再按模型叠乘一层。模型名支持精确匹配与末尾 * 前缀通配（如 claude-opus-4*），精确优先、其次最长前缀。作用于 token / 生图 / 视频计费；网页搜索与语音按能力计价，不受影响。留空表示不叠乘，0 表示该模型免费。',
+        modelPlaceholder: '模型名或前缀通配，如 claude-opus-4*',
+        addRow: '添加模型倍率',
+        errors: {
+          invalidWildcard: '模型名 {model} 只支持末尾一个 * 通配（如 claude-opus-4*）',
+          invalidMultiplier: '模型 {model} 的倍率必须是不小于 0 的有限数',
+          duplicateModel: '模型 {model} 重复配置了倍率',
+          tooManyRows: '模型倍率条目数不能超过 {max} 条'
+        }
+      },
       profitControl: {
         enable: '启用利润控制',
         enabledHint: '调度时仅允许"账号倍率 ≤ 请求实际下游倍率 ×（1 − 最低毛利率 − 安全缓冲）"的账号进入候选池；账号倍率可手工维护或由探测同步，既有排序、粘性与熔断在合格账号间照常工作。图片/视频调度暂不参与。',

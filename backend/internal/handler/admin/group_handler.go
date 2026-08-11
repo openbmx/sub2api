@@ -128,6 +128,7 @@ type CreateGroupRequest struct {
 	VideoPrice720P                  *float64                      `json:"video_price_720p"`
 	VideoPrice1080P                 *float64                      `json:"video_price_1080p"`
 	VideoModelPrices                map[string]map[string]float64 `json:"video_model_prices,omitempty"`
+	ModelRateMultipliers            map[string]float64            `json:"model_rate_multipliers,omitempty"`
 	WebSearchPricePerCall           *float64                      `json:"web_search_price_per_call"`
 	SearchPricePer1k                *float64                      `json:"search_price_per_1k"`
 	AudioRealtimePricePerMin        *float64                      `json:"audio_realtime_price_per_min"`
@@ -195,6 +196,7 @@ type UpdateGroupRequest struct {
 	VideoPrice720P                  *float64                      `json:"video_price_720p"`
 	VideoPrice1080P                 *float64                      `json:"video_price_1080p"`
 	VideoModelPrices                map[string]map[string]float64 `json:"video_model_prices,omitempty"`
+	ModelRateMultipliers            map[string]float64            `json:"model_rate_multipliers,omitempty"`
 	WebSearchPricePerCall           *float64                      `json:"web_search_price_per_call"`
 	SearchPricePer1k                *float64                      `json:"search_price_per_1k"`
 	AudioRealtimePricePerMin        *float64                      `json:"audio_realtime_price_per_min"`
@@ -491,6 +493,11 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	if err := service.ValidateModelRateMultipliers(req.ModelRateMultipliers); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
 	// platform 是 omitempty：预校验必须用与 CreateGroup 落库一致的归一化平台，
 	// 否则省略 platform 的请求会被误判成「平台不支持利润控制」。
 	if err := service.ValidateProfitControlConfig(service.NormalizeGroupPlatform(req.Platform), req.ProfitControlEnabled, float64ValueOrDefault(req.ProfitMinMargin, 0), float64ValueOrDefault(req.ProfitSafetyBuffer, 0)); err != nil {
@@ -530,6 +537,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		VideoPrice720P:                  req.VideoPrice720P,
 		VideoPrice1080P:                 req.VideoPrice1080P,
 		VideoModelPrices:                req.VideoModelPrices,
+		ModelRateMultipliers:            req.ModelRateMultipliers,
 		WebSearchPricePerCall:           req.WebSearchPricePerCall,
 		SearchPricePer1k:                req.SearchPricePer1k,
 		AudioRealtimePricePerMin:        req.AudioRealtimePricePerMin,
@@ -624,6 +632,11 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		return
 	}
 
+	if err := service.ValidateModelRateMultipliers(req.ModelRateMultipliers); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
 	group, err := h.adminService.UpdateGroup(c.Request.Context(), groupID, &service.UpdateGroupInput{
 		Name:                            req.Name,
 		Description:                     req.Description,
@@ -657,6 +670,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		VideoPrice720P:                  req.VideoPrice720P,
 		VideoPrice1080P:                 req.VideoPrice1080P,
 		VideoModelPrices:                req.VideoModelPrices,
+		ModelRateMultipliers:            req.ModelRateMultipliers,
 		WebSearchPricePerCall:           req.WebSearchPricePerCall,
 		SearchPricePer1k:                req.SearchPricePer1k,
 		AudioRealtimePricePerMin:        req.AudioRealtimePricePerMin,

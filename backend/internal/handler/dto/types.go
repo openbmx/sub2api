@@ -123,6 +123,8 @@ type Group struct {
 	VideoPrice1080P    *float64 `json:"video_price_1080p"`
 	// VideoModelPrices 可选按模型族×分辨率覆盖视频每秒单价 (USD/s)。
 	VideoModelPrices map[string]map[string]float64 `json:"video_model_prices,omitempty"`
+	// ModelRateMultipliers 按模型叠乘的额外计费倍率，key 支持精确名与末尾 * 前缀通配。
+	ModelRateMultipliers map[string]float64 `json:"model_rate_multipliers,omitempty"`
 	// Codex alpha/search 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
 	WebSearchPricePerCall        *float64 `json:"web_search_price_per_call"`
 	SearchPricePer1k             *float64 `json:"search_price_per_1k"`

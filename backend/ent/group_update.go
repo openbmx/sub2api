@@ -652,6 +652,18 @@ func (_u *GroupUpdate) ClearVideoModelPrices() *GroupUpdate {
 	return _u
 }
 
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (_u *GroupUpdate) SetModelRateMultipliers(v map[string]float64) *GroupUpdate {
+	_u.mutation.SetModelRateMultipliers(v)
+	return _u
+}
+
+// ClearModelRateMultipliers clears the value of the "model_rate_multipliers" field.
+func (_u *GroupUpdate) ClearModelRateMultipliers() *GroupUpdate {
+	_u.mutation.ClearModelRateMultipliers()
+	return _u
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (_u *GroupUpdate) SetWebSearchPricePerCall(v float64) *GroupUpdate {
 	_u.mutation.ResetWebSearchPricePerCall()
@@ -1651,6 +1663,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.VideoModelPricesCleared() {
 		_spec.ClearField(group.FieldVideoModelPrices, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.ModelRateMultipliers(); ok {
+		_spec.SetField(group.FieldModelRateMultipliers, field.TypeJSON, value)
+	}
+	if _u.mutation.ModelRateMultipliersCleared() {
+		_spec.ClearField(group.FieldModelRateMultipliers, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.WebSearchPricePerCall(); ok {
 		_spec.SetField(group.FieldWebSearchPricePerCall, field.TypeFloat64, value)
@@ -2727,6 +2745,18 @@ func (_u *GroupUpdateOne) ClearVideoModelPrices() *GroupUpdateOne {
 	return _u
 }
 
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (_u *GroupUpdateOne) SetModelRateMultipliers(v map[string]float64) *GroupUpdateOne {
+	_u.mutation.SetModelRateMultipliers(v)
+	return _u
+}
+
+// ClearModelRateMultipliers clears the value of the "model_rate_multipliers" field.
+func (_u *GroupUpdateOne) ClearModelRateMultipliers() *GroupUpdateOne {
+	_u.mutation.ClearModelRateMultipliers()
+	return _u
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (_u *GroupUpdateOne) SetWebSearchPricePerCall(v float64) *GroupUpdateOne {
 	_u.mutation.ResetWebSearchPricePerCall()
@@ -3756,6 +3786,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.VideoModelPricesCleared() {
 		_spec.ClearField(group.FieldVideoModelPrices, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.ModelRateMultipliers(); ok {
+		_spec.SetField(group.FieldModelRateMultipliers, field.TypeJSON, value)
+	}
+	if _u.mutation.ModelRateMultipliersCleared() {
+		_spec.ClearField(group.FieldModelRateMultipliers, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.WebSearchPricePerCall(); ok {
 		_spec.SetField(group.FieldWebSearchPricePerCall, field.TypeFloat64, value)

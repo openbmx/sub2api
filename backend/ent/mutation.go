@@ -21897,6 +21897,7 @@ type GroupMutation struct {
 	video_price_1080p                       *float64
 	addvideo_price_1080p                    *float64
 	video_model_prices                      *map[string]map[string]float64
+	model_rate_multipliers                  *map[string]float64
 	web_search_price_per_call               *float64
 	addweb_search_price_per_call            *float64
 	search_price_per_1k                     *float64
@@ -23780,6 +23781,55 @@ func (m *GroupMutation) ResetVideoModelPrices() {
 	delete(m.clearedFields, group.FieldVideoModelPrices)
 }
 
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (m *GroupMutation) SetModelRateMultipliers(value map[string]float64) {
+	m.model_rate_multipliers = &value
+}
+
+// ModelRateMultipliers returns the value of the "model_rate_multipliers" field in the mutation.
+func (m *GroupMutation) ModelRateMultipliers() (r map[string]float64, exists bool) {
+	v := m.model_rate_multipliers
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldModelRateMultipliers returns the old "model_rate_multipliers" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldModelRateMultipliers(ctx context.Context) (v map[string]float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldModelRateMultipliers is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldModelRateMultipliers requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldModelRateMultipliers: %w", err)
+	}
+	return oldValue.ModelRateMultipliers, nil
+}
+
+// ClearModelRateMultipliers clears the value of the "model_rate_multipliers" field.
+func (m *GroupMutation) ClearModelRateMultipliers() {
+	m.model_rate_multipliers = nil
+	m.clearedFields[group.FieldModelRateMultipliers] = struct{}{}
+}
+
+// ModelRateMultipliersCleared returns if the "model_rate_multipliers" field was cleared in this mutation.
+func (m *GroupMutation) ModelRateMultipliersCleared() bool {
+	_, ok := m.clearedFields[group.FieldModelRateMultipliers]
+	return ok
+}
+
+// ResetModelRateMultipliers resets all changes to the "model_rate_multipliers" field.
+func (m *GroupMutation) ResetModelRateMultipliers() {
+	m.model_rate_multipliers = nil
+	delete(m.clearedFields, group.FieldModelRateMultipliers)
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (m *GroupMutation) SetWebSearchPricePerCall(f float64) {
 	m.web_search_price_per_call = &f
@@ -25435,7 +25485,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 60)
+	fields := make([]string, 0, 61)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -25537,6 +25587,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.video_model_prices != nil {
 		fields = append(fields, group.FieldVideoModelPrices)
+	}
+	if m.model_rate_multipliers != nil {
+		fields = append(fields, group.FieldModelRateMultipliers)
 	}
 	if m.web_search_price_per_call != nil {
 		fields = append(fields, group.FieldWebSearchPricePerCall)
@@ -25692,6 +25745,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.VideoPrice1080p()
 	case group.FieldVideoModelPrices:
 		return m.VideoModelPrices()
+	case group.FieldModelRateMultipliers:
+		return m.ModelRateMultipliers()
 	case group.FieldWebSearchPricePerCall:
 		return m.WebSearchPricePerCall()
 	case group.FieldSearchPricePer1k:
@@ -25821,6 +25876,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldVideoPrice1080p(ctx)
 	case group.FieldVideoModelPrices:
 		return m.OldVideoModelPrices(ctx)
+	case group.FieldModelRateMultipliers:
+		return m.OldModelRateMultipliers(ctx)
 	case group.FieldWebSearchPricePerCall:
 		return m.OldWebSearchPricePerCall(ctx)
 	case group.FieldSearchPricePer1k:
@@ -26119,6 +26176,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetVideoModelPrices(v)
+		return nil
+	case group.FieldModelRateMultipliers:
+		v, ok := value.(map[string]float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetModelRateMultipliers(v)
 		return nil
 	case group.FieldWebSearchPricePerCall:
 		v, ok := value.(float64)
@@ -26698,6 +26762,9 @@ func (m *GroupMutation) ClearedFields() []string {
 	if m.FieldCleared(group.FieldVideoModelPrices) {
 		fields = append(fields, group.FieldVideoModelPrices)
 	}
+	if m.FieldCleared(group.FieldModelRateMultipliers) {
+		fields = append(fields, group.FieldModelRateMultipliers)
+	}
 	if m.FieldCleared(group.FieldWebSearchPricePerCall) {
 		fields = append(fields, group.FieldWebSearchPricePerCall)
 	}
@@ -26774,6 +26841,9 @@ func (m *GroupMutation) ClearField(name string) error {
 		return nil
 	case group.FieldVideoModelPrices:
 		m.ClearVideoModelPrices()
+		return nil
+	case group.FieldModelRateMultipliers:
+		m.ClearModelRateMultipliers()
 		return nil
 	case group.FieldWebSearchPricePerCall:
 		m.ClearWebSearchPricePerCall()
@@ -26908,6 +26978,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldVideoModelPrices:
 		m.ResetVideoModelPrices()
+		return nil
+	case group.FieldModelRateMultipliers:
+		m.ResetModelRateMultipliers()
 		return nil
 	case group.FieldWebSearchPricePerCall:
 		m.ResetWebSearchPricePerCall()

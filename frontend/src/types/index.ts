@@ -575,6 +575,9 @@ export interface Group {
   video_price_1080p: number | null
   // Optional model-family x resolution overrides for Grok video pricing.
   video_model_prices?: VideoModelPrices
+  // 按模型叠乘的额外计费倍率：在分组有效倍率与高峰因子之上再乘一层。
+  // key 支持精确模型名与末尾 * 前缀通配（精确优先，其次最长前缀）；空/缺省表示不叠乘。
+  model_rate_multipliers?: Record<string, number>
   // Codex 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
   web_search_price_per_call: number | null
   // Grok Voice 显式定价（分组级）

@@ -489,6 +489,12 @@ func (_c *GroupCreate) SetVideoModelPrices(v map[string]map[string]float64) *Gro
 	return _c
 }
 
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (_c *GroupCreate) SetModelRateMultipliers(v map[string]float64) *GroupCreate {
+	_c.mutation.SetModelRateMultipliers(v)
+	return _c
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (_c *GroupCreate) SetWebSearchPricePerCall(v float64) *GroupCreate {
 	_c.mutation.SetWebSearchPricePerCall(v)
@@ -1464,6 +1470,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldVideoModelPrices, field.TypeJSON, value)
 		_node.VideoModelPrices = value
 	}
+	if value, ok := _c.mutation.ModelRateMultipliers(); ok {
+		_spec.SetField(group.FieldModelRateMultipliers, field.TypeJSON, value)
+		_node.ModelRateMultipliers = value
+	}
 	if value, ok := _c.mutation.WebSearchPricePerCall(); ok {
 		_spec.SetField(group.FieldWebSearchPricePerCall, field.TypeFloat64, value)
 		_node.WebSearchPricePerCall = &value
@@ -2273,6 +2283,24 @@ func (u *GroupUpsert) UpdateVideoModelPrices() *GroupUpsert {
 // ClearVideoModelPrices clears the value of the "video_model_prices" field.
 func (u *GroupUpsert) ClearVideoModelPrices() *GroupUpsert {
 	u.SetNull(group.FieldVideoModelPrices)
+	return u
+}
+
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (u *GroupUpsert) SetModelRateMultipliers(v map[string]float64) *GroupUpsert {
+	u.Set(group.FieldModelRateMultipliers, v)
+	return u
+}
+
+// UpdateModelRateMultipliers sets the "model_rate_multipliers" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateModelRateMultipliers() *GroupUpsert {
+	u.SetExcluded(group.FieldModelRateMultipliers)
+	return u
+}
+
+// ClearModelRateMultipliers clears the value of the "model_rate_multipliers" field.
+func (u *GroupUpsert) ClearModelRateMultipliers() *GroupUpsert {
+	u.SetNull(group.FieldModelRateMultipliers)
 	return u
 }
 
@@ -3391,6 +3419,27 @@ func (u *GroupUpsertOne) UpdateVideoModelPrices() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearVideoModelPrices() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearVideoModelPrices()
+	})
+}
+
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (u *GroupUpsertOne) SetModelRateMultipliers(v map[string]float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetModelRateMultipliers(v)
+	})
+}
+
+// UpdateModelRateMultipliers sets the "model_rate_multipliers" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateModelRateMultipliers() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateModelRateMultipliers()
+	})
+}
+
+// ClearModelRateMultipliers clears the value of the "model_rate_multipliers" field.
+func (u *GroupUpsertOne) ClearModelRateMultipliers() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearModelRateMultipliers()
 	})
 }
 
@@ -4746,6 +4795,27 @@ func (u *GroupUpsertBulk) UpdateVideoModelPrices() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearVideoModelPrices() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearVideoModelPrices()
+	})
+}
+
+// SetModelRateMultipliers sets the "model_rate_multipliers" field.
+func (u *GroupUpsertBulk) SetModelRateMultipliers(v map[string]float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetModelRateMultipliers(v)
+	})
+}
+
+// UpdateModelRateMultipliers sets the "model_rate_multipliers" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateModelRateMultipliers() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateModelRateMultipliers()
+	})
+}
+
+// ClearModelRateMultipliers clears the value of the "model_rate_multipliers" field.
+func (u *GroupUpsertBulk) ClearModelRateMultipliers() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearModelRateMultipliers()
 	})
 }
 

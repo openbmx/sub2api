@@ -375,6 +375,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if err := ValidatePeakRateConfig(subscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
 		return nil, err
 	}
+	// 与高峰配置同一收口顺序：先归一化再校验，保证落库值与被校验值是同一个。
+	if err := ValidateModelRateMultipliers(NormalizeModelRateMultipliers(input.ModelRateMultipliers)); err != nil {
+		return nil, err
+	}
 
 	profitMinMargin := 0.0
 	if input.ProfitMinMargin != nil {
@@ -481,6 +485,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice720P:                  videoPrice720P,
 		VideoPrice1080P:                 videoPrice1080P,
 		VideoModelPrices:                NormalizeVideoModelPrices(input.VideoModelPrices),
+		ModelRateMultipliers:            NormalizeModelRateMultipliers(input.ModelRateMultipliers),
 		WebSearchPricePerCall:           webSearchPricePerCall,
 		SearchPricePer1k:                searchPricePer1k,
 		AudioRealtimePricePerMin:        audioRealtimePricePerMin,
@@ -767,6 +772,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	// nil = leave unchanged; empty map = clear per-model prices.
 	if input.VideoModelPrices != nil {
 		group.VideoModelPrices = NormalizeVideoModelPrices(input.VideoModelPrices)
+	}
+	// 同上：nil 不修改，空 map 清除全部模型倍率。
+	// 仅在本次请求确实携带该字段时校验，避免存量脏数据把无关字段的更新也一并卡死。
+	if input.ModelRateMultipliers != nil {
+		group.ModelRateMultipliers = NormalizeModelRateMultipliers(input.ModelRateMultipliers)
+		if err := ValidateModelRateMultipliers(group.ModelRateMultipliers); err != nil {
+			return nil, err
+		}
 	}
 	if input.WebSearchPricePerCall != nil {
 		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)

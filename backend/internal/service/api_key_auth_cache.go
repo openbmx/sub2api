@@ -120,6 +120,12 @@ type APIKeyAuthGroupSnapshot struct {
 	PeakEnd            string  `json:"peak_end"`
 	PeakRateMultiplier float64 `json:"peak_rate_multiplier"`
 
+	// ModelRateMultipliers 按模型叠乘的额外计费倍率（详见 Group.ModelMultiplierFor）。
+	// 与上面的高峰字段同理：必须随快照缓存，否则扣费路径拿到的 apiKey.Group 缺字段、
+	// 模型倍率会静默按 1.0 生效——不报错，只是不扣该扣的钱。
+	// 发版后的存量快照没有这个键，反序列化得到 nil，ModelMultiplierFor 返回 1.0 安全降级。
+	ModelRateMultipliers map[string]float64 `json:"model_rate_multipliers,omitempty"`
+
 	// 分组利润控制：调度准入门在直连热路径上读的就是这份快照——门解析
 	// （resolveOpenAIProfitControlGate / resolveProfitControlGroup）优先取
 	// 认证中间件放入 ctx 的 Group，而它正是本快照物化出来的对象，生产绝大

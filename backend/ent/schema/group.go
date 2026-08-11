@@ -152,6 +152,10 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("按模型族和分辨率覆盖视频每秒价格"),
+		field.JSON("model_rate_multipliers", map[string]float64{}).
+			Optional().
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("按模型叠乘的额外计费倍率，在分组有效倍率与高峰因子之上再乘；key 支持精确名与末尾 * 前缀通配，精确优先、其次最长前缀"),
 		field.Float("web_search_price_per_call").
 			Optional().
 			Nillable().
