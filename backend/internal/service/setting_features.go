@@ -1116,14 +1116,17 @@ func (s *SettingService) GetAccountSchedulingThresholds(ctx context.Context) map
 		if err != nil {
 			// key 未落库是预期状态（管理员从未保存过该设置），默认全 100 = 不启用自动停调。
 			// 这种情况静默走默认值并按正常 TTL 缓存；只有真实 DB 故障才告警 + 短 TTL 尽快重试。
-			ttl := accountSchedulingThresholdsCacheTTL
-			if !errors.Is(err, ErrSettingNotFound) {
-				slog.Warn("failed to get account scheduling thresholds, falling back to defaults", "error", err)
-				ttl = accountSchedulingThresholdsErrorTTL
+			if errors.Is(err, ErrSettingNotFound) {
+				accountSchedulingThresholdsCache.Store(&cachedAccountSchedulingThresholds{
+					thresholds: cloneAccountSchedulingThresholds(thresholds),
+					expiresAt:  time.Now().Add(accountSchedulingThresholdsCacheTTL).UnixNano(),
+				})
+				return cloneAccountSchedulingThresholds(thresholds), nil
 			}
+			slog.Warn("failed to get account scheduling thresholds, falling back to defaults", "error", err)
 			accountSchedulingThresholdsCache.Store(&cachedAccountSchedulingThresholds{
 				thresholds: cloneAccountSchedulingThresholds(thresholds),
-				expiresAt:  time.Now().Add(ttl).UnixNano(),
+				expiresAt:  time.Now().Add(accountSchedulingThresholdsErrorTTL).UnixNano(),
 			})
 			return cloneAccountSchedulingThresholds(thresholds), nil
 		}
