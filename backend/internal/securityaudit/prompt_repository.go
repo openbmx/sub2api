@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const (
@@ -16,15 +17,32 @@ const (
 	promptAuditConfigLockKey    int64 = 579147893221901922
 )
 
-// Bounds for retrying a lost admission lock. The guarded critical section is one
-// counting query plus one INSERT, so a contended enqueue only has to outwait the
-// transaction ahead of it; six attempts spread over roughly a tenth of a second
-// absorb the burst sizes an agent client produces while staying far inside the
-// caller's own budget.
+// Admission bounds.
+//
+// lock_timeout is what turns a contended admission into a bounded FIFO wait
+// instead of an immediate drop: PostgreSQL queues advisory-lock waiters in the
+// same lock manager it uses for table and row locks, and aborts a wait that
+// outlives the timeout with SQLSTATE 55P03. The guarded critical section is one
+// counting query plus an INSERT and its commit — single-digit milliseconds — so
+// the timeout only fires under contention far beyond what a burst produces.
+//
+// admissionSlots bounds how many admissions may hold a pooled connection while
+// queued on that lock. Enqueue concurrency (PromptService.enqueueSlots) is an
+// order of magnitude larger than the database pool this repository shares with
+// the rest of the gateway, so without the cap one burst could park every
+// connection on the lock and stall unrelated queries. Waiting for a slot happens
+// in Go and costs no connection.
 const (
-	promptAuditAdmissionAttempts   = 6
-	promptAuditAdmissionBackoffMin = 2 * time.Millisecond
-	promptAuditAdmissionBackoffMax = 32 * time.Millisecond
+	promptAuditAdmissionLockTimeout = "250ms"
+
+	// Admission may occupy at most this fraction of the shared pool, and never
+	// more than the ceiling regardless of how large the pool is — beyond a
+	// handful of waiters the lock, not the pool, is the limit.
+	promptAuditAdmissionPoolDivisor = 4
+	promptAuditAdmissionSlotCeiling = 6
+
+	// pgLockNotAvailable is SQLSTATE 55P03, raised when lock_timeout elapses.
+	pgLockNotAvailable = "55P03"
 )
 
 var (
@@ -95,60 +113,86 @@ type JobRepository interface {
 }
 
 type PostgreSQLRepository struct {
-	db    *sql.DB
-	clock Clock
+	db             *sql.DB
+	clock          Clock
+	admissionSlots chan struct{}
 }
 
 func NewPostgreSQLRepository(db *sql.DB) *PostgreSQLRepository {
-	return &PostgreSQLRepository{db: db, clock: realClock{}}
+	return &PostgreSQLRepository{
+		db:             db,
+		clock:          realClock{},
+		admissionSlots: make(chan struct{}, admissionSlotsFor(db)),
+	}
+}
+
+// admissionSlotsFor sizes the admission cap against the pool this repository was
+// handed. database/sql reports 0 for an unbounded pool, which is also what a
+// caller that never configured limits looks like; the ceiling covers both. A
+// pool too small to yield a share still gets one slot, since a cap of zero would
+// deadlock admission rather than bound it.
+func admissionSlotsFor(db *sql.DB) int {
+	slots := promptAuditAdmissionSlotCeiling
+	if db != nil {
+		if maxOpen := db.Stats().MaxOpenConnections; maxOpen > 0 {
+			if share := maxOpen / promptAuditAdmissionPoolDivisor; share < slots {
+				slots = share
+			}
+		}
+	}
+	if slots < 1 {
+		slots = 1
+	}
+	return slots
 }
 
 // CreateStagingWithCapacity admits one async audit job, serialising the capacity
 // check with the staging INSERT so concurrent instances cannot each observe
 // spare capacity and collectively overshoot queue_capacity.
 //
-// Losing the admission lock is retried rather than dropped. Enqueue runs off the
-// request's critical path with a seconds-long budget, so a bounded wait costs the
-// caller nothing, whereas giving up on the first miss discards audit coverage for
-// precisely the traffic that causes misses — an agent fanning several requests
-// out within the same millisecond. Sustained contention still surfaces as
-// ErrQueueAdmissionBusy once the attempts are spent.
+// Admission waits for the lock instead of abandoning the job when another
+// enqueue holds it. Simultaneous arrival is the ordinary shape of this traffic —
+// an agent fans several requests out inside the same millisecond — so treating a
+// lost race as an overload signal silently discarded audit coverage while the
+// queue sat essentially empty. Enqueue runs off the request's critical path with
+// a seconds-long budget, so the wait is invisible to the caller.
 //
-// The wait happens in Go between transactions rather than inside the database on
-// pg_advisory_xact_lock, because enqueue concurrency far exceeds the connection
-// pool: parking waiters on a pooled connection would starve the gateway's own
-// queries for the duration of a burst.
+// ErrQueueAdmissionBusy consequently now means what it says: contention that
+// outlasted promptAuditAdmissionLockTimeout.
 func (r *PostgreSQLRepository) CreateStagingWithCapacity(ctx context.Context, snapshot PromptSnapshot, configVersion int64, maxAttempts, capacity int) (*Job, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("prompt audit database unavailable")
 	}
-	for attempt := 0; ; attempt++ {
-		job, err := r.createStagingOnce(ctx, snapshot, configVersion, maxAttempts, capacity)
-		if !errors.Is(err, ErrQueueAdmissionBusy) || attempt >= promptAuditAdmissionAttempts-1 {
-			return job, err
-		}
-		// A cancelled or expired caller propagates as itself. Reporting it as
-		// contention would describe the same lost caller two different ways
-		// depending on whether it died during a backoff or inside the next
-		// transaction's BeginTx.
-		if waitErr := sleepWithContext(ctx, admissionBackoff(attempt)); waitErr != nil {
-			return nil, waitErr
-		}
+	// Queue for a slot before taking a connection, so enqueues waiting their turn
+	// never occupy the pool the gateway's own queries draw from.
+	select {
+	case r.admissionSlots <- struct{}{}:
+		defer func() { <-r.admissionSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-}
 
-func (r *PostgreSQLRepository) createStagingOnce(ctx context.Context, snapshot PromptSnapshot, configVersion int64, maxAttempts, capacity int) (*Job, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var locked bool
-	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1)`, promptAuditAdmissionLockKey).Scan(&locked); err != nil {
+
+	// SET LOCAL takes no parameters; set_config(..., is_local => true) is the same
+	// statement in function form and reverts when this transaction ends.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT set_config('lock_timeout', $1, true)`, promptAuditAdmissionLockTimeout); err != nil {
 		return nil, err
 	}
-	if !locked {
-		return nil, ErrQueueAdmissionBusy
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock($1)`, promptAuditAdmissionLockKey); err != nil {
+		// Only a timeout on this statement is admission contention. The same
+		// SQLSTATE raised later would mean something else blocked the INSERT, and
+		// reporting that as a busy queue would misdirect whoever reads the log.
+		if isLockNotAvailable(err) {
+			return nil, ErrQueueAdmissionBusy
+		}
+		return nil, err
 	}
 	var active int
 	if err := tx.QueryRowContext(ctx, `
@@ -172,32 +216,12 @@ func (r *PostgreSQLRepository) createStagingOnce(ctx context.Context, snapshot P
 	return job, nil
 }
 
-// admissionBackoff grows the pause between admission attempts and jitters it.
-// The jitter is what makes the retry work: without it, enqueues that collided
-// once sleep for identical durations and simply collide again every round.
-func admissionBackoff(attempt int) time.Duration {
-	if attempt < 0 {
-		attempt = 0
+func isLockNotAvailable(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr != nil {
+		return string(pqErr.Code) == pgLockNotAvailable
 	}
-	base := promptAuditAdmissionBackoffMax
-	if attempt < 16 {
-		if shifted := promptAuditAdmissionBackoffMin << attempt; shifted < base {
-			base = shifted
-		}
-	}
-	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
-}
-
-func sleepWithContext(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return false
 }
 
 func (r *PostgreSQLRepository) PublishQueued(ctx context.Context, jobID int64) error {
