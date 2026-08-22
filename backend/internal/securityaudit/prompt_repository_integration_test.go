@@ -295,6 +295,41 @@ func TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction(t *testin
 	require.Equal(t, "failed", status)
 }
 
+// Concurrent enqueues that all fit inside the configured capacity must all be
+// admitted. This is the shape that production actually produces — an agent
+// client fanning requests out in parallel, against a queue that is nowhere near
+// full — and every enqueue that lost the admission lock used to be discarded.
+func TestPromptAuditRepositoryConcurrentAdmissionUnderCapacityKeepsEveryJob(t *testing.T) {
+	db := openPromptAuditIntegrationDB(t)
+	repo := NewPostgreSQLRepository(db)
+	ctx := context.Background()
+
+	const concurrency = 16
+	start := make(chan struct{})
+	failures := make(chan error, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			_, err := repo.CreateStagingWithCapacity(
+				ctx, integrationSnapshot(fmt.Sprintf("burst-%d", index)), 1, 3, concurrency*4)
+			failures <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		require.NoError(t, err, "admission must wait out contention while capacity remains")
+	}
+
+	stats, err := repo.QueueStats(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(concurrency), stats.Active)
+}
+
 func TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots(t *testing.T) {
 	db := openPromptAuditIntegrationDB(t)
 	repo := NewPostgreSQLRepository(db)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 )
@@ -13,6 +14,17 @@ import (
 const (
 	promptAuditAdmissionLockKey int64 = 579147893221901921
 	promptAuditConfigLockKey    int64 = 579147893221901922
+)
+
+// Bounds for retrying a lost admission lock. The guarded critical section is one
+// counting query plus one INSERT, so a contended enqueue only has to outwait the
+// transaction ahead of it; six attempts spread over roughly a tenth of a second
+// absorb the burst sizes an agent client produces while staying far inside the
+// caller's own budget.
+const (
+	promptAuditAdmissionAttempts   = 6
+	promptAuditAdmissionBackoffMin = 2 * time.Millisecond
+	promptAuditAdmissionBackoffMax = 32 * time.Millisecond
 )
 
 var (
@@ -91,10 +103,41 @@ func NewPostgreSQLRepository(db *sql.DB) *PostgreSQLRepository {
 	return &PostgreSQLRepository{db: db, clock: realClock{}}
 }
 
+// CreateStagingWithCapacity admits one async audit job, serialising the capacity
+// check with the staging INSERT so concurrent instances cannot each observe
+// spare capacity and collectively overshoot queue_capacity.
+//
+// Losing the admission lock is retried rather than dropped. Enqueue runs off the
+// request's critical path with a seconds-long budget, so a bounded wait costs the
+// caller nothing, whereas giving up on the first miss discards audit coverage for
+// precisely the traffic that causes misses — an agent fanning several requests
+// out within the same millisecond. Sustained contention still surfaces as
+// ErrQueueAdmissionBusy once the attempts are spent.
+//
+// The wait happens in Go between transactions rather than inside the database on
+// pg_advisory_xact_lock, because enqueue concurrency far exceeds the connection
+// pool: parking waiters on a pooled connection would starve the gateway's own
+// queries for the duration of a burst.
 func (r *PostgreSQLRepository) CreateStagingWithCapacity(ctx context.Context, snapshot PromptSnapshot, configVersion int64, maxAttempts, capacity int) (*Job, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("prompt audit database unavailable")
 	}
+	for attempt := 0; ; attempt++ {
+		job, err := r.createStagingOnce(ctx, snapshot, configVersion, maxAttempts, capacity)
+		if !errors.Is(err, ErrQueueAdmissionBusy) || attempt >= promptAuditAdmissionAttempts-1 {
+			return job, err
+		}
+		// A cancelled or expired caller propagates as itself. Reporting it as
+		// contention would describe the same lost caller two different ways
+		// depending on whether it died during a backoff or inside the next
+		// transaction's BeginTx.
+		if waitErr := sleepWithContext(ctx, admissionBackoff(attempt)); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+}
+
+func (r *PostgreSQLRepository) createStagingOnce(ctx context.Context, snapshot PromptSnapshot, configVersion int64, maxAttempts, capacity int) (*Job, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
@@ -127,6 +170,34 @@ func (r *PostgreSQLRepository) CreateStagingWithCapacity(ctx context.Context, sn
 		return nil, err
 	}
 	return job, nil
+}
+
+// admissionBackoff grows the pause between admission attempts and jitters it.
+// The jitter is what makes the retry work: without it, enqueues that collided
+// once sleep for identical durations and simply collide again every round.
+func admissionBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	base := promptAuditAdmissionBackoffMax
+	if attempt < 16 {
+		if shifted := promptAuditAdmissionBackoffMin << attempt; shifted < base {
+			base = shifted
+		}
+	}
+	half := base / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (r *PostgreSQLRepository) PublishQueued(ctx context.Context, jobID int64) error {
