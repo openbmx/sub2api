@@ -18,6 +18,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// promptAuditConfigLockTimeout bounds how long a config save will queue behind
+// another one. The wait itself is wanted — saves are a compare-and-set, so a
+// queued writer goes on to observe the winner's version and report a conflict
+// the administrator can act on, which is far more useful than a timeout. The
+// bound exists only so a save whose holder is wedged cannot pin a pooled
+// connection indefinitely, and is therefore set orders of magnitude above the
+// few milliseconds a save actually takes.
+const promptAuditConfigLockTimeout = "5s"
+
 type activeConfigSnapshot struct {
 	storage  storageConfig
 	active   ActiveConfig
@@ -273,7 +282,15 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 		return PublicConfig{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`SELECT set_config('lock_timeout', $1, true)`, promptAuditConfigLockTimeout); err != nil {
+		return PublicConfig{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, promptAuditConfigLockKey); err != nil {
+		if isLockNotAvailable(err) {
+			return PublicConfig{}, infraerrors.ServiceUnavailable(
+				ErrorCodeConfigSaveBusy, "提示词审计配置正在被保存，请稍后重试")
+		}
 		return PublicConfig{}, err
 	}
 	current := DefaultStorageConfig()

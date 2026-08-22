@@ -20,9 +20,14 @@ const (
 	// used to surface as prompt_guard_invalid_response, which sent operators
 	// hunting for a prompt bug when the real fix is more max_tokens or a model
 	// that does not spend the budget on reasoning.
-	ErrorCodeOutputTruncated       = "prompt_guard_output_truncated"
-	ErrorCodeConfigConflict        = "prompt_audit_config_conflict"
-	ErrorCodeConfigUnavailable     = "prompt_audit_config_unavailable"
+	ErrorCodeOutputTruncated   = "prompt_guard_output_truncated"
+	ErrorCodeConfigConflict    = "prompt_audit_config_conflict"
+	ErrorCodeConfigUnavailable = "prompt_audit_config_unavailable"
+	// ErrorCodeConfigSaveBusy is distinct from ErrorCodeConfigConflict: a
+	// conflict means someone else's version won and the draft must be rebased,
+	// whereas this means the save never got far enough to compare versions and
+	// retrying the same draft is the right response.
+	ErrorCodeConfigSaveBusy        = "prompt_audit_config_save_busy"
 	ErrorCodeEncryptionKeyRequired = "prompt_audit_encryption_key_required"
 	ErrorCodeRequiresEnabled       = "prompt_guard_requires_audit_enabled"
 	ErrorCodeCustomPromptRequired  = "prompt_audit_custom_prompt_required"

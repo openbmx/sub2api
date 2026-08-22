@@ -152,6 +152,7 @@ export default {
       prompt_audit_custom_prompt_too_long: 'The moderation prompt exceeds the length limit.',
       prompt_audit_endpoint_not_found: 'The audit node does not exist or its credential is unusable. Save the node configuration first.',
       prompt_audit_config_conflict: 'Another administrator updated this configuration. Reload the server version before deciding how to merge your draft.',
+      prompt_audit_config_save_busy: 'Another save is still in progress. Your draft is unchanged — try saving again in a moment.',
       prompt_audit_encryption_key_required: 'No fixed encryption key is configured, so audit node API Keys would be lost on restart. Set the TOTP_ENCRYPTION_KEY environment variable and restart the service first.',
       prompt_guard_requires_audit_enabled: 'Enable Prompt Audit before synchronous blocking.', prompt_audit_invalid_endpoint: 'The audit node configuration is invalid.', prompt_audit_endpoint_required: 'Enable at least one audit node before enabling Prompt Audit.', prompt_audit_groups_required: 'Select at least one group in selected-group mode.', prompt_audit_scanners_required: 'Enable at least one risk category.',
     },

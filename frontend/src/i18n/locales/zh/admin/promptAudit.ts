@@ -152,6 +152,7 @@ export default {
       prompt_audit_custom_prompt_too_long: '审核提示词超出长度上限。',
       prompt_audit_endpoint_not_found: '审计节点不存在或凭证不可用，请先保存节点配置。',
       prompt_audit_config_conflict: '配置已被其他管理员更新。请重新加载服务端配置，再决定如何合并本地草稿。',
+      prompt_audit_config_save_busy: '另一次保存尚未完成。本地草稿未受影响，稍后重试即可。',
       prompt_audit_encryption_key_required: '未配置固定加密密钥，审计节点 API Key 将在服务重启后失效。请先设置 TOTP_ENCRYPTION_KEY 环境变量并重启服务。',
       prompt_guard_requires_audit_enabled: '开启同步阻止前必须先启用提示词审计。', prompt_audit_invalid_endpoint: '审计节点配置无效。', prompt_audit_endpoint_required: '启用审计前至少需要一个启用节点。', prompt_audit_groups_required: '指定分组模式至少需要选择一个分组。', prompt_audit_scanners_required: '至少需要启用一个风险分类。',
     },

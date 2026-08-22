@@ -152,6 +152,38 @@ func TestCreateStagingWithCapacityReleasesItsSlotOnEveryPath(t *testing.T) {
 	require.Empty(t, repo.admissionSlots, "all admission slots must be free once calls return")
 }
 
+// A repository built without the constructor has no slot channel. Sending on a
+// nil channel blocks forever, and a background context never releases it, so the
+// enqueue path would wedge rather than merely lose its cap.
+func TestCreateStagingWithCapacitySurvivesUnsetAdmissionSlots(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	mock.ExpectBegin()
+	mock.ExpectExec("set_config").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("pg_advisory_xact_lock").WillReturnError(lockTimeoutError())
+	mock.ExpectRollback()
+
+	repo := &PostgreSQLRepository{db: db, clock: realClock{}}
+	require.Nil(t, repo.admissionSlots, "this test is meaningless if the zero value is populated")
+
+	done := make(chan error, 1)
+	go func() {
+		_, callErr := repo.CreateStagingWithCapacity(
+			context.Background(), PromptSnapshot{RequestID: "unset-slots"}, 1, 3, 1024)
+		done <- callErr
+	}()
+
+	select {
+	case callErr := <-done:
+		require.ErrorIs(t, callErr, ErrQueueAdmissionBusy)
+	case <-time.After(10 * time.Second):
+		t.Fatal("admission blocked forever on a nil slot channel")
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // The cap is what keeps a burst of enqueues from parking every pooled connection
 // on the advisory lock, so it has to follow the pool this repository was actually
 // handed rather than a constant that happens to suit one deployment.

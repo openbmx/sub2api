@@ -165,11 +165,18 @@ func (r *PostgreSQLRepository) CreateStagingWithCapacity(ctx context.Context, sn
 	}
 	// Queue for a slot before taking a connection, so enqueues waiting their turn
 	// never occupy the pool the gateway's own queries draw from.
-	select {
-	case r.admissionSlots <- struct{}{}:
-		defer func() { <-r.admissionSlots }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	//
+	// Only NewPostgreSQLRepository builds the channel. A zero-valued repository
+	// would otherwise send on a nil channel, which blocks forever rather than
+	// merely losing the bound — and with a background context there is nothing to
+	// unblock it. Losing the cap is recoverable; a wedged enqueue path is not.
+	if r.admissionSlots != nil {
+		select {
+		case r.admissionSlots <- struct{}{}:
+			defer func() { <-r.admissionSlots }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
