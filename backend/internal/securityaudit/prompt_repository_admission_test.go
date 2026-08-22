@@ -152,6 +152,26 @@ func TestCreateStagingWithCapacityReleasesItsSlotOnEveryPath(t *testing.T) {
 	require.Empty(t, repo.admissionSlots, "all admission slots must be free once calls return")
 }
 
+// A queue that cannot admit anything is settled before a slot, a connection or
+// the global lock is taken. Answering it inside the lock instead would turn one
+// bad configuration value into hot-path serialisation for every request.
+func TestCreateStagingWithCapacityRejectsImpossibleCapacityWithoutTakingAnything(t *testing.T) {
+	for _, capacity := range []int{0, -1} {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+
+		repo := NewPostgreSQLRepository(db)
+		_, err = repo.CreateStagingWithCapacity(
+			context.Background(), PromptSnapshot{RequestID: "no-capacity"}, 1, 3, capacity)
+
+		require.ErrorIs(t, err, ErrQueueFull, "capacity %d", capacity)
+		require.NoError(t, mock.ExpectationsWereMet(),
+			"capacity %d must be rejected without opening a transaction", capacity)
+		require.Empty(t, repo.admissionSlots, "capacity %d must not consume a slot", capacity)
+		_ = db.Close()
+	}
+}
+
 // A repository built without the constructor has no slot channel. Sending on a
 // nil channel blocks forever, and a background context never releases it, so the
 // enqueue path would wedge rather than merely lose its cap.

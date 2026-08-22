@@ -163,6 +163,20 @@ func (r *PostgreSQLRepository) CreateStagingWithCapacity(ctx context.Context, sn
 	if r == nil || r.db == nil {
 		return nil, errors.New("prompt audit database unavailable")
 	}
+	// A capacity that can admit nothing is a configuration answer, not a database
+	// one. Deciding it before anything is acquired keeps a queue_capacity that
+	// arrived as a zero value from driving every single enqueue through the global
+	// admission lock just to be rejected on the other side — the exact hot-path
+	// serialisation this lock is supposed to stay out of.
+	if capacity <= 0 {
+		return nil, ErrQueueFull
+	}
+	// A caller that is already gone gets a deterministic answer. Both cases of the
+	// select below are ready when the context is done and a slot is free, and Go
+	// chooses between ready cases at random.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Queue for a slot before taking a connection, so enqueues waiting their turn
 	// never occupy the pool the gateway's own queries draw from.
 	//
@@ -207,7 +221,7 @@ func (r *PostgreSQLRepository) CreateStagingWithCapacity(ctx context.Context, sn
 		WHERE status IN ('staging','queued','processing','retry')`).Scan(&active); err != nil {
 		return nil, err
 	}
-	if capacity <= 0 || active >= capacity {
+	if active >= capacity {
 		return nil, ErrQueueFull
 	}
 	if maxAttempts <= 0 {
