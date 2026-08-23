@@ -21,6 +21,12 @@ type AdminService interface {
 	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)
 	BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error)
 	BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error)
+	// BatchUpdateUserStatus 批量启用/禁用用户（管理员账号不允许被禁用，记入 Skipped）。
+	BatchUpdateUserStatus(ctx context.Context, userIDs []int64, status string) (*BatchUserOperationResult, error)
+	// BatchDeleteUsers 批量删除用户（复用单用户删除路径，失败的用户记入 Skipped）。
+	BatchDeleteUsers(ctx context.Context, userIDs []int64) (*BatchUserOperationResult, error)
+	// BatchUpdateUserBalance 批量调整用户余额，operation 支持 set/add/subtract。
+	BatchUpdateUserBalance(ctx context.Context, userIDs []int64, balance float64, operation string, notes string) (*BatchUserOperationResult, error)
 	GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]APIKey, int64, error)
 	GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error)
 	GetUserRPMStatus(ctx context.Context, userID int64) (*UserRPMStatus, error)

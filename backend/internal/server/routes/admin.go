@@ -173,6 +173,9 @@ func registerContentModerationRoutes(admin *gin.RouterGroup, h *handler.Handlers
 		risk.POST("/users/:user_id/unban", h.Admin.ContentModeration.UnbanUser)
 		risk.DELETE("/hashes", h.Admin.ContentModeration.DeleteFlaggedHash)
 		risk.DELETE("/hashes/all", h.Admin.ContentModeration.ClearFlaggedHashes)
+		// IP 访问控制（IP 黑名单 + IPv6 拦截）
+		risk.GET("/ip-access-control", h.Admin.Setting.GetIPAccessControl)
+		risk.PUT("/ip-access-control", h.Admin.Setting.UpdateIPAccessControl)
 	}
 }
 
@@ -309,6 +312,9 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		users.GET("/:id/rpm-status", h.Admin.User.GetUserRPMStatus)
 		users.POST("/batch-concurrency", h.Admin.User.BatchUpdateConcurrency)
 		users.POST("/batch-limits", h.Admin.User.BatchUpdateLimits)
+		users.POST("/batch-status", h.Admin.User.BatchUpdateStatus)
+		users.POST("/batch-delete", h.Admin.User.BatchDelete)
+		users.POST("/batch-balance", h.Admin.User.BatchUpdateBalance)
 		users.GET("/:id/platform-quotas", h.Admin.User.GetUserPlatformQuotas)
 		users.PUT("/:id/platform-quotas", h.Admin.User.UpdateUserPlatformQuotas)
 		users.POST("/:id/platform-quotas/reset", h.Admin.User.ResetUserPlatformQuotaWindow)

@@ -13,6 +13,8 @@ const {
   listLogs,
   getGroups,
   getProxies,
+  getIPAccessControl,
+  updateIPAccessControl,
   showError,
   showSuccess,
 } = vi.hoisted(() => ({
@@ -22,6 +24,8 @@ const {
   listLogs: vi.fn(),
   getGroups: vi.fn(),
   getProxies: vi.fn(),
+  getIPAccessControl: vi.fn(),
+  updateIPAccessControl: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
 }))
@@ -37,6 +41,8 @@ vi.mock('@/api/admin', () => ({
       deleteFlaggedHash: vi.fn(),
       clearFlaggedHashes: vi.fn(),
       unbanUser: vi.fn(),
+      getIPAccessControl,
+      updateIPAccessControl,
     },
     groups: {
       getAll: getGroups,
@@ -197,6 +203,8 @@ describe('admin RiskControlView', () => {
     getStatus.mockReset()
     listLogs.mockReset()
     getGroups.mockReset()
+    getIPAccessControl.mockReset()
+    updateIPAccessControl.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
 
@@ -205,6 +213,21 @@ describe('admin RiskControlView', () => {
     listLogs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 1 })
     getGroups.mockResolvedValue([])
     getProxies.mockResolvedValue([])
+    getIPAccessControl.mockResolvedValue({
+      ip_blacklist_enabled: false,
+      ip_blacklist: [],
+      ip_blacklist_message: '',
+      ipv6_block_enabled: false,
+      ipv6_block_message: '',
+    })
+    updateIPAccessControl.mockImplementation(async (payload: Record<string, unknown>) => ({
+      ip_blacklist_enabled: false,
+      ip_blacklist: [],
+      ip_blacklist_message: '',
+      ipv6_block_enabled: false,
+      ipv6_block_message: '',
+      ...payload,
+    }))
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({
       ...baseConfig(),
       ...payload,
@@ -281,6 +304,37 @@ describe('admin RiskControlView', () => {
         sexual: 0.72,
         harassment: 0.99,
       }),
+    }))
+    expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('saves ip access control with parsed blacklist entries', async () => {
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    await wrapper.get('[data-test="ip-blacklist-input"]').setValue('1.2.3.4\n 10.0.0.0/8 \n\n2001:db8::/32')
+    await wrapper.get('[data-test="ip-blacklist-message"]').setValue('你已被封禁')
+    await wrapper.get('[data-test="ip-access-save"]').trigger('click')
+    await flushPromises()
+
+    expect(updateIPAccessControl).toHaveBeenCalledWith(expect.objectContaining({
+      ip_blacklist: ['1.2.3.4', '10.0.0.0/8', '2001:db8::/32'],
+      ip_blacklist_message: '你已被封禁',
+      force: false,
     }))
     expect(showError).not.toHaveBeenCalled()
   })

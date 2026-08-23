@@ -16,6 +16,11 @@ import (
 
 // IsRegistrationEnabled 检查是否开放注册
 func (s *SettingService) IsRegistrationEnabled(ctx context.Context) bool {
+	// IPv6 拦截（风控中心）：命中时对该客户端视为注册关闭。
+	// 所有注册入口（邮箱注册/验证码/各 OAuth 自动建号）都经过本函数，在此统一拦截。
+	if s.isIPv6RegistrationBlocked(ctx) {
+		return false
+	}
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyRegistrationEnabled)
 	if err != nil {
 		// 安全默认：如果设置不存在或查询出错，默认关闭注册

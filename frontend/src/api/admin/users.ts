@@ -55,6 +55,25 @@ export interface BatchUpdateUserLimitsResponse {
   affected: number
 }
 
+export interface BatchUserOperationSkipped {
+  id: number
+  reason: string
+}
+
+export interface BatchUserOperationResult {
+  affected: number
+  success_ids: number[] | null
+  skipped: BatchUserOperationSkipped[] | null
+}
+
+export interface BatchUpdateUserBalanceRequest {
+  user_ids: number[]
+  all?: boolean
+  balance: number
+  operation: 'set' | 'add' | 'subtract'
+  notes?: string
+}
+
 /**
  * List all users with pagination
  * @param page - Page number (default: 1)
@@ -203,6 +222,37 @@ export async function batchUpdateLimits(
     '/admin/users/batch-limits',
     request
   )
+  return data
+}
+
+/** Batch enable/disable users. Admin accounts are skipped when disabling. */
+export async function batchUpdateStatus(
+  userIds: number[],
+  status: 'active' | 'disabled'
+): Promise<BatchUserOperationResult> {
+  const { data } = await apiClient.post<BatchUserOperationResult>('/admin/users/batch-status', {
+    user_ids: userIds,
+    status
+  })
+  return data
+}
+
+/** Batch delete users (their API keys are cascaded). Admin accounts are skipped. */
+export async function batchDelete(userIds: number[]): Promise<BatchUserOperationResult> {
+  const { data } = await apiClient.post<BatchUserOperationResult>('/admin/users/batch-delete', {
+    user_ids: userIds
+  })
+  return data
+}
+
+/** Batch adjust user balances. operation=set overwrites the balance to the given value. */
+export async function batchUpdateBalance(
+  request: BatchUpdateUserBalanceRequest
+): Promise<BatchUserOperationResult> {
+  const { data } = await apiClient.post<BatchUserOperationResult>('/admin/users/batch-balance', {
+    notes: '',
+    ...request
+  })
   return data
 }
 
@@ -408,6 +458,9 @@ export const usersAPI = {
   updateBalance,
   updateConcurrency,
   batchUpdateLimits,
+  batchUpdateStatus,
+  batchDelete,
+  batchUpdateBalance,
   toggleStatus,
   getUserApiKeys,
   getUserUsageStats,

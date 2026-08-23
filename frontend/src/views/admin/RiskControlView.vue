@@ -53,6 +53,86 @@
           </div>
         </div>
 
+        <div data-test="ip-access-control-card" class="card">
+          <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.ipAccess.title') }}</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.ipAccess.description') }}</p>
+            </div>
+            <button
+              type="button"
+              class="btn btn-primary inline-flex w-fit items-center gap-2"
+              :disabled="ipAccessSaving || ipAccessLoading"
+              data-test="ip-access-save"
+              @click="saveIPAccess()"
+            >
+              {{ ipAccessSaving ? t('admin.riskControl.ipAccess.saving') : t('admin.riskControl.ipAccess.save') }}
+            </button>
+          </div>
+          <div v-if="ipAccessLoading" class="flex items-center justify-center px-6 py-10">
+            <div class="h-6 w-6 animate-spin rounded-full border-b-2 border-primary-600"></div>
+          </div>
+          <div v-else class="grid grid-cols-1 gap-8 px-6 py-5 lg:grid-cols-2">
+            <div class="space-y-4">
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.ipAccess.blacklistTitle') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.ipAccess.blacklistHint') }}</p>
+                </div>
+                <Toggle
+                  v-model="ipAccessForm.ip_blacklist_enabled"
+                  :aria-label="t('admin.riskControl.ipAccess.blacklistTitle')"
+                  data-test="ip-blacklist-toggle"
+                />
+              </div>
+              <textarea
+                v-model="ipAccessForm.ip_blacklist_text"
+                rows="7"
+                class="input font-mono text-sm"
+                :placeholder="t('admin.riskControl.ipAccess.blacklistPlaceholder')"
+                data-test="ip-blacklist-input"
+              ></textarea>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.ipAccess.blockMessage') }}</label>
+                <input
+                  v-model="ipAccessForm.ip_blacklist_message"
+                  type="text"
+                  class="input"
+                  maxlength="1000"
+                  :placeholder="t('admin.riskControl.ipAccess.blacklistMessagePlaceholder')"
+                  data-test="ip-blacklist-message"
+                />
+              </div>
+            </div>
+
+            <div class="space-y-4">
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.ipAccess.ipv6Title') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.ipAccess.ipv6Hint') }}</p>
+                </div>
+                <Toggle
+                  v-model="ipAccessForm.ipv6_block_enabled"
+                  :aria-label="t('admin.riskControl.ipAccess.ipv6Title')"
+                  data-test="ipv6-block-toggle"
+                />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.ipAccess.blockMessage') }}</label>
+                <input
+                  v-model="ipAccessForm.ipv6_block_message"
+                  type="text"
+                  class="input"
+                  maxlength="1000"
+                  :placeholder="t('admin.riskControl.ipAccess.ipv6MessagePlaceholder')"
+                  data-test="ipv6-block-message"
+                />
+              </div>
+              <p class="text-xs text-gray-400 dark:text-gray-500">{{ t('admin.riskControl.ipAccess.ipv6Note') }}</p>
+            </div>
+          </div>
+        </div>
+
         <div
           v-if="showPreBlockRuntimeCard"
           data-test="pre-block-runtime-cards"
@@ -1139,6 +1219,7 @@ import type {
   ContentModerationModelFilterType,
   ContentModerationRuntimeStatus,
   ContentModerationTestAuditResult,
+  IPAccessControlSettings,
   KeywordBlockingMode,
   ModerationMode,
   UpdateContentModerationConfig,
@@ -1741,8 +1822,73 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.model_filter_models = modelFilter.models
 }
 
+// ---- IP 访问控制（IP 黑名单 + IPv6 拦截）----
+const ipAccessLoading = ref(true)
+const ipAccessSaving = ref(false)
+const ipAccessForm = reactive({
+  ip_blacklist_enabled: false,
+  ip_blacklist_text: '',
+  ip_blacklist_message: '',
+  ipv6_block_enabled: false,
+  ipv6_block_message: '',
+})
+
+function applyIPAccess(settings: IPAccessControlSettings) {
+  ipAccessForm.ip_blacklist_enabled = settings.ip_blacklist_enabled
+  ipAccessForm.ip_blacklist_text = (settings.ip_blacklist ?? []).join('\n')
+  ipAccessForm.ip_blacklist_message = settings.ip_blacklist_message ?? ''
+  ipAccessForm.ipv6_block_enabled = settings.ipv6_block_enabled
+  ipAccessForm.ipv6_block_message = settings.ipv6_block_message ?? ''
+}
+
+async function loadIPAccess() {
+  ipAccessLoading.value = true
+  try {
+    applyIPAccess(await adminAPI.riskControl.getIPAccessControl())
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.ipAccess.loadFailed')))
+  } finally {
+    ipAccessLoading.value = false
+  }
+}
+
+async function saveIPAccess(force = false) {
+  if (ipAccessSaving.value) return
+  const entries = ipAccessForm.ip_blacklist_text
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+  ipAccessSaving.value = true
+  try {
+    const updated = await adminAPI.riskControl.updateIPAccessControl({
+      ip_blacklist_enabled: ipAccessForm.ip_blacklist_enabled,
+      ip_blacklist: entries,
+      ip_blacklist_message: ipAccessForm.ip_blacklist_message.trim(),
+      ipv6_block_enabled: ipAccessForm.ipv6_block_enabled,
+      ipv6_block_message: ipAccessForm.ipv6_block_message.trim(),
+      force,
+    })
+    applyIPAccess(updated)
+    appStore.showSuccess(t('admin.riskControl.ipAccess.saved'))
+  } catch (error) {
+    const message = extractApiErrorMessage(error, t('admin.riskControl.ipAccess.saveFailed'))
+    // 后端自锁保护：当前管理员 IP 会被拦截时需要 force 确认
+    if (!force && typeof message === 'string' && message.includes('force=true')) {
+      ipAccessSaving.value = false
+      if (window.confirm(t('admin.riskControl.ipAccess.selfLockConfirm'))) {
+        await saveIPAccess(true)
+      }
+      return
+    }
+    appStore.showError(message)
+  } finally {
+    ipAccessSaving.value = false
+  }
+}
+
 async function loadAll() {
   loading.value = true
+  void loadIPAccess()
   try {
     const [config, groupItems, runtimeStatus, proxyItems] = await Promise.all([
       adminAPI.riskControl.getConfig(),

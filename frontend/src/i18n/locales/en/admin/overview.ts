@@ -455,6 +455,42 @@ export default {
         success: 'Updated limits for {count} users',
         failed: 'Failed to update user limits'
       },
+      bulkBalance: {
+        action: 'Bulk balance',
+        title: 'Set user balances',
+        selectedCount: '{count} users selected',
+        operation: 'Operation',
+        operationSet: 'Set to value',
+        operationAdd: 'Add value',
+        operationSubtract: 'Subtract value',
+        operationSetHint: 'Set the balance of the selected users to this exact amount (0 allowed to reset).',
+        operationAddHint: 'Add this amount to each selected user\'s current balance.',
+        operationSubtractHint: 'Subtract this amount from each selected user\'s balance (users with insufficient balance are skipped).',
+        amount: 'Amount',
+        notes: 'Notes',
+        notesPlaceholder: 'Optional, stored in the balance history',
+        invalidSetAmount: 'Enter an amount of 0 or more.',
+        invalidDeltaAmount: 'Enter an amount greater than 0.',
+        apply: 'Apply',
+        applying: 'Applying...',
+        confirm: 'Apply "{operation}" with amount {amount} to {count} users?',
+        success: 'Updated balances for {count} users',
+        partialSuccess: 'Updated balances for {count} users, {skipped} skipped',
+        failed: 'Failed to update user balances'
+      },
+      bulkStatus: {
+        disableAction: 'Bulk disable',
+        enableAction: 'Bulk enable',
+        confirmDisable: 'Disable the {count} selected users? Their API keys stop working immediately (admin accounts are skipped automatically).',
+        confirmEnable: 'Enable the {count} selected users?'
+      },
+      bulkDelete: {
+        action: 'Bulk delete',
+        confirm: 'Delete the {count} selected users? All of their API keys are deleted as well. This cannot be undone (admin accounts are skipped automatically).'
+      },
+      bulkActionSuccess: 'Processed {count} users',
+      bulkActionPartial: 'Processed {count} users, {skipped} skipped',
+      bulkActionFailed: 'Bulk operation failed',
       editUser: 'Edit User',
       deleteUser: 'Delete User',
       deleteConfirmMessage: "Are you sure you want to delete user '{email}'? This action cannot be undone.",

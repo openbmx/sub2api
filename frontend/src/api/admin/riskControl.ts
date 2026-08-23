@@ -286,6 +286,43 @@ export async function clearFlaggedHashes(): Promise<ClearFlaggedHashesResponse> 
   return data
 }
 
+// ---- IP 访问控制（IP 黑名单 + IPv6 拦截）----
+
+export interface IPAccessControlSettings {
+  ip_blacklist_enabled: boolean
+  ip_blacklist: string[]
+  ip_blacklist_message: string
+  ipv6_block_enabled: boolean
+  ipv6_block_message: string
+}
+
+export interface UpdateIPAccessControlPayload {
+  ip_blacklist_enabled?: boolean
+  ip_blacklist?: string[]
+  ip_blacklist_message?: string
+  ipv6_block_enabled?: boolean
+  ipv6_block_message?: string
+  /** 跳过"当前管理员 IP 会被黑名单拦截"的自锁保护 */
+  force?: boolean
+}
+
+export async function getIPAccessControl(): Promise<IPAccessControlSettings> {
+  const { data } = await apiClient.get<IPAccessControlSettings>(
+    '/admin/risk-control/ip-access-control'
+  )
+  return data
+}
+
+export async function updateIPAccessControl(
+  payload: UpdateIPAccessControlPayload
+): Promise<IPAccessControlSettings> {
+  const { data } = await apiClient.put<IPAccessControlSettings>(
+    '/admin/risk-control/ip-access-control',
+    payload
+  )
+  return data
+}
+
 export const riskControlAPI = {
   getConfig,
   updateConfig,
@@ -295,6 +332,8 @@ export const riskControlAPI = {
   unbanUser,
   deleteFlaggedHash,
   clearFlaggedHashes,
+  getIPAccessControl,
+  updateIPAccessControl,
 }
 
 export default riskControlAPI

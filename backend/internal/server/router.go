@@ -69,6 +69,9 @@ func SetupRouter(
 		return nil
 	}))
 	r.Use(middleware2.ServerTiming(cfg.Server.EnableServerTiming))
+	// IP 访问控制（风控中心）：IP 黑名单全站拦截 + IPv6 网关拦截。
+	// 必须在 SessionBindingContext 之后（取安全客户端 IP）、前端静态资源中间件之前。
+	r.Use(middleware2.IPAccessControl(settingService))
 
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {

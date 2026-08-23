@@ -376,3 +376,28 @@ func ValidateIPPatterns(patterns []string) []string {
 	}
 	return invalid
 }
+
+// MatchesCompiledRules 检查 IP 是否命中预编译规则。
+// IP 非法或规则为空时返回 false（不命中），供"命中即拒绝"的黑名单场景使用。
+func MatchesCompiledRules(clientIP string, rules *CompiledIPRules) bool {
+	if rules == nil || rules.PatternCount == 0 {
+		return false
+	}
+	return matchesCompiledRules(net.ParseIP(normalizeIP(clientIP)), rules)
+}
+
+// IsPublicIPv6 报告地址是否为可公网路由的 IPv6 地址。
+// IPv4 与 IPv4-mapped（::ffff:a.b.c.d）返回 false；
+// 环回、链路本地、ULA（fc00::/7）等内网 IPv6 也返回 false，
+// 避免 IPv6 拦截误伤容器内部/本机流量。
+func IsPublicIPv6(ipStr string) bool {
+	parsed := net.ParseIP(normalizeIP(ipStr))
+	if parsed == nil || parsed.To4() != nil {
+		return false
+	}
+	if parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() ||
+		parsed.IsPrivate() || parsed.IsUnspecified() {
+		return false
+	}
+	return true
+}

@@ -455,6 +455,42 @@ export default {
         success: '已更新 {count} 个用户的限制',
         failed: '批量更新用户限制失败'
       },
+      bulkBalance: {
+        action: '批量余额',
+        title: '批量设置用户余额',
+        selectedCount: '已选择 {count} 个用户',
+        operation: '操作方式',
+        operationSet: '设置为指定值',
+        operationAdd: '增加指定值',
+        operationSubtract: '减少指定值',
+        operationSetHint: '将所选用户的余额直接设置为该金额（允许 0，即清零）。',
+        operationAddHint: '在所选用户当前余额上增加该金额。',
+        operationSubtractHint: '在所选用户当前余额上减少该金额（余额不足的用户会被跳过）。',
+        amount: '金额',
+        notes: '备注',
+        notesPlaceholder: '可选，写入余额变更记录',
+        invalidSetAmount: '请输入不小于 0 的金额。',
+        invalidDeltaAmount: '请输入大于 0 的金额。',
+        apply: '应用',
+        applying: '应用中...',
+        confirm: '确定对 {count} 个用户执行「{operation}」金额 {amount} 吗？',
+        success: '已更新 {count} 个用户的余额',
+        partialSuccess: '已更新 {count} 个用户的余额，{skipped} 个用户被跳过',
+        failed: '批量更新用户余额失败'
+      },
+      bulkStatus: {
+        disableAction: '批量封禁',
+        enableAction: '批量解封',
+        confirmDisable: '确定封禁所选的 {count} 个用户吗？封禁后其 API Key 将立即无法调用（管理员账号会被自动跳过）。',
+        confirmEnable: '确定解封所选的 {count} 个用户吗？'
+      },
+      bulkDelete: {
+        action: '批量删除',
+        confirm: '确定删除所选的 {count} 个用户吗？将同时删除其全部 API Key，此操作不可恢复（管理员账号会被自动跳过）。'
+      },
+      bulkActionSuccess: '已处理 {count} 个用户',
+      bulkActionPartial: '已处理 {count} 个用户，{skipped} 个用户被跳过',
+      bulkActionFailed: '批量操作失败',
       editUser: '编辑用户',
       deleteUser: '删除用户',
       deleteConfirmMessage: "确定要删除用户 '{email}' 吗？此操作无法撤销。",

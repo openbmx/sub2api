@@ -252,6 +252,42 @@
               {{ t('admin.users.bulkLimits.action', { count: selectedCount }) }}
             </button>
 
+            <button
+              v-if="selectedCount > 0"
+              class="btn btn-secondary flex-1 md:flex-initial"
+              data-test="bulk-balance"
+              @click="showBulkBalanceModal = true"
+            >
+              {{ t('admin.users.bulkBalance.action') }}
+            </button>
+
+            <button
+              v-if="selectedCount > 0"
+              class="btn btn-secondary flex-1 md:flex-initial"
+              data-test="bulk-disable"
+              @click="openBulkAction('disable')"
+            >
+              {{ t('admin.users.bulkStatus.disableAction') }}
+            </button>
+
+            <button
+              v-if="selectedCount > 0"
+              class="btn btn-secondary flex-1 md:flex-initial"
+              data-test="bulk-enable"
+              @click="openBulkAction('enable')"
+            >
+              {{ t('admin.users.bulkStatus.enableAction') }}
+            </button>
+
+            <button
+              v-if="selectedCount > 0"
+              class="btn btn-danger flex-1 md:flex-initial"
+              data-test="bulk-delete"
+              @click="openBulkAction('delete')"
+            >
+              {{ t('admin.users.bulkDelete.action') }}
+            </button>
+
             <!-- Create User Button (full width on mobile, auto width on desktop) -->
             <button @click="showCreateModal = true" class="btn btn-primary flex-1 md:flex-initial">
               <Icon name="plus" size="md" class="mr-2" />
@@ -756,6 +792,20 @@
       @close="showBulkEditModal = false"
       @success="handleBulkLimitsSuccess"
     />
+    <BulkBalanceModal
+      :show="showBulkBalanceModal"
+      :selected-ids="selectedIds"
+      @close="showBulkBalanceModal = false"
+      @success="handleBulkLimitsSuccess"
+    />
+    <ConfirmDialog
+      :show="bulkActionType !== null"
+      :title="bulkActionTitle"
+      :message="bulkActionMessage"
+      :danger="bulkActionType === 'delete'"
+      @confirm="confirmBulkAction"
+      @cancel="bulkActionType = null"
+    />
     <UserPlatformQuotaModal
       :show="showPlatformQuotaModal"
       :user="platformQuotaUser"
@@ -804,6 +854,7 @@ import UserPlatformQuotaCell from '@/components/user/UserPlatformQuotaCell.vue'
 import UserCreateModal from '@/components/admin/user/UserCreateModal.vue'
 import UserEditModal from '@/components/admin/user/UserEditModal.vue'
 import BulkEditUserModal from '@/components/admin/user/BulkEditUserModal.vue'
+import BulkBalanceModal from '@/components/admin/user/BulkBalanceModal.vue'
 import UserPlatformQuotaModal from '@/components/admin/user/UserPlatformQuotaModal.vue'
 import UserApiKeysModal from '@/components/admin/user/UserApiKeysModal.vue'
 import UserAllowedGroupsModal from '@/components/admin/user/UserAllowedGroupsModal.vue'
@@ -1628,6 +1679,80 @@ const loadUsers = async () => {
 const handleBulkLimitsSuccess = async () => {
   clearSelection()
   await loadUsers()
+}
+
+// ---- 批量封禁/解封/删除 ----
+const MAX_BULK_ACTION_IDS = 500
+type BulkActionType = 'disable' | 'enable' | 'delete'
+const showBulkBalanceModal = ref(false)
+const bulkActionType = ref<BulkActionType | null>(null)
+const bulkActionSubmitting = ref(false)
+
+const bulkActionTitle = computed(() => {
+  switch (bulkActionType.value) {
+    case 'disable':
+      return t('admin.users.bulkStatus.disableAction')
+    case 'enable':
+      return t('admin.users.bulkStatus.enableAction')
+    case 'delete':
+      return t('admin.users.bulkDelete.action')
+    default:
+      return ''
+  }
+})
+
+const bulkActionMessage = computed(() => {
+  switch (bulkActionType.value) {
+    case 'disable':
+      return t('admin.users.bulkStatus.confirmDisable', { count: selectedCount.value })
+    case 'enable':
+      return t('admin.users.bulkStatus.confirmEnable', { count: selectedCount.value })
+    case 'delete':
+      return t('admin.users.bulkDelete.confirm', { count: selectedCount.value })
+    default:
+      return ''
+  }
+})
+
+const openBulkAction = (action: BulkActionType) => {
+  if (selectedCount.value === 0) return
+  if (selectedCount.value > MAX_BULK_ACTION_IDS) {
+    appStore.showError(t('admin.users.bulkLimits.selectionLimit', { max: MAX_BULK_ACTION_IDS }))
+    return
+  }
+  bulkActionType.value = action
+}
+
+const confirmBulkAction = async () => {
+  const action = bulkActionType.value
+  if (!action || bulkActionSubmitting.value) return
+  bulkActionSubmitting.value = true
+  try {
+    const ids = [...selectedIds.value]
+    const result =
+      action === 'delete'
+        ? await adminAPI.users.batchDelete(ids)
+        : await adminAPI.users.batchUpdateStatus(ids, action === 'disable' ? 'disabled' : 'active')
+    const skipped = result.skipped?.length ?? 0
+    if (skipped > 0) {
+      appStore.showError(
+        t('admin.users.bulkActionPartial', { count: result.affected, skipped })
+      )
+    } else {
+      appStore.showSuccess(t('admin.users.bulkActionSuccess', { count: result.affected }))
+    }
+    bulkActionType.value = null
+    clearSelection()
+    await loadUsers()
+  } catch (error: any) {
+    appStore.showError(
+      error.response?.data?.message ||
+        error.response?.data?.detail ||
+        t('admin.users.bulkActionFailed')
+    )
+  } finally {
+    bulkActionSubmitting.value = false
+  }
 }
 
 let searchTimeout: ReturnType<typeof setTimeout>
