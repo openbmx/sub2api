@@ -93,6 +93,51 @@ func cloneGroupModelRateMultipliers(value map[string]float64) map[string]float64
 	return cloned
 }
 
+// cloneGroupPricingInterval detaches every nullable price of one tier so the
+// copy owns its own values.
+func cloneGroupPricingInterval(value PricingInterval) PricingInterval {
+	cloned := value
+	cloned.MaxTokens = cloneGroupValuePointer(value.MaxTokens)
+	cloned.InputPrice = cloneGroupValuePointer(value.InputPrice)
+	cloned.OutputPrice = cloneGroupValuePointer(value.OutputPrice)
+	cloned.CacheWritePrice = cloneGroupValuePointer(value.CacheWritePrice)
+	cloned.CacheReadPrice = cloneGroupValuePointer(value.CacheReadPrice)
+	cloned.InputMultiplier = cloneGroupValuePointer(value.InputMultiplier)
+	cloned.OutputMultiplier = cloneGroupValuePointer(value.OutputMultiplier)
+	cloned.CacheWriteMultiplier = cloneGroupValuePointer(value.CacheWriteMultiplier)
+	cloned.CacheReadMultiplier = cloneGroupValuePointer(value.CacheReadMultiplier)
+	cloned.PerRequestPrice = cloneGroupValuePointer(value.PerRequestPrice)
+	return cloned
+}
+
+// cloneGroupModelPricing deep copies the group's model price overrides.
+// ChannelModelPricing.Clone only detaches the slices and TimePricing and keeps
+// the price pointers shared, so the pointers are detached here as well: editing
+// the copy's prices must never write through to the source group.
+func cloneGroupModelPricing(value []ChannelModelPricing) []ChannelModelPricing {
+	if value == nil {
+		return nil
+	}
+	cloned := make([]ChannelModelPricing, len(value))
+	for i, pricing := range value {
+		entry := pricing.Clone()
+		entry.InputPrice = cloneGroupValuePointer(pricing.InputPrice)
+		entry.OutputPrice = cloneGroupValuePointer(pricing.OutputPrice)
+		entry.CacheWritePrice = cloneGroupValuePointer(pricing.CacheWritePrice)
+		entry.CacheReadPrice = cloneGroupValuePointer(pricing.CacheReadPrice)
+		entry.FastMultiplier = cloneGroupValuePointer(pricing.FastMultiplier)
+		entry.FlexMultiplier = cloneGroupValuePointer(pricing.FlexMultiplier)
+		entry.ImageInputPrice = cloneGroupValuePointer(pricing.ImageInputPrice)
+		entry.ImageOutputPrice = cloneGroupValuePointer(pricing.ImageOutputPrice)
+		entry.PerRequestPrice = cloneGroupValuePointer(pricing.PerRequestPrice)
+		for j := range entry.Intervals {
+			entry.Intervals[j] = cloneGroupPricingInterval(entry.Intervals[j])
+		}
+		cloned[i] = entry
+	}
+	return cloned
+}
+
 func cloneGroupMessagesDispatchModelConfig(value OpenAIMessagesDispatchModelConfig) OpenAIMessagesDispatchModelConfig {
 	cloned := value
 	if value.ExactModelMappings != nil {
@@ -104,6 +149,12 @@ func cloneGroupMessagesDispatchModelConfig(value OpenAIMessagesDispatchModelConf
 	return cloned
 }
 
+// cloneGroupForDuplicate copies every configuration field of the source group.
+// Only ID, CreatedAt, UpdatedAt, Hydrated, AccountGroups and the AccountCount
+// family are left out: those are per-row or derived state the copy re-earns.
+// Adding a field to Group means adding it here too, or the copy silently drops
+// it — TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState walks
+// the struct reflectively to catch exactly that.
 func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 	return &Group{
 		Name:                            duplicateGroupName(source.Name, 1),
@@ -146,6 +197,8 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		AudioRealtimePricePerMin:        cloneGroupValuePointer(source.AudioRealtimePricePerMin),
 		AudioTTSPricePerMillionChars:    cloneGroupValuePointer(source.AudioTTSPricePerMillionChars),
 		AudioSTTPricePerHour:            cloneGroupValuePointer(source.AudioSTTPricePerHour),
+		LongContextPricingEnabled:       source.LongContextPricingEnabled,
+		ModelPricing:                    cloneGroupModelPricing(source.ModelPricing),
 		ClaudeCodeOnly:                  source.ClaudeCodeOnly,
 		FallbackGroupID:                 cloneGroupValuePointer(source.FallbackGroupID),
 		FallbackGroupIDOnInvalidRequest: cloneGroupValuePointer(source.FallbackGroupIDOnInvalidRequest),

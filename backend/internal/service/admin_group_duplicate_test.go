@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -155,7 +156,36 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 		VideoModelPrices: map[string]map[string]float64{
 			VideoPriceFamilyGrokImagineVideo15: {VideoBillingResolution720P: 0.14},
 		},
-		WebSearchPricePerCall:           groupDuplicateTestPointer(0.005),
+		ModelRateMultipliers:         map[string]float64{"gpt-5.4*": 1.3},
+		WebSearchPricePerCall:        groupDuplicateTestPointer(0.005),
+		SearchPricePer1k:             groupDuplicateTestPointer(0.35),
+		AudioRealtimePricePerMin:     groupDuplicateTestPointer(0.06),
+		AudioTTSPricePerMillionChars: groupDuplicateTestPointer(12.0),
+		AudioSTTPricePerHour:         groupDuplicateTestPointer(0.36),
+		LongContextPricingEnabled:    true,
+		ModelPricing: []ChannelModelPricing{{
+			Platform:        PlatformOpenAI,
+			Models:          []string{"gpt-5.4"},
+			BillingMode:     BillingModeToken,
+			InputPrice:      groupDuplicateTestPointer(1.25),
+			OutputPrice:     groupDuplicateTestPointer(10.0),
+			CacheWritePrice: groupDuplicateTestPointer(1.5625),
+			CacheReadPrice:  groupDuplicateTestPointer(0.125),
+			Intervals: []PricingInterval{{
+				MinTokens:   0,
+				MaxTokens:   groupDuplicateTestPointer(200000),
+				TierLabel:   "<=200k",
+				InputPrice:  groupDuplicateTestPointer(1.25),
+				OutputPrice: groupDuplicateTestPointer(10.0),
+			}},
+			TimePricing: &ChannelTimePricing{
+				Timezone: "Asia/Shanghai",
+				Periods:  []ChannelTimePricingPeriod{{StartTime: "00:00", EndTime: "08:00", Multiplier: 0.5}},
+			},
+		}},
+		ProfitControlEnabled:            true,
+		ProfitMinMargin:                 0.3,
+		ProfitSafetyBuffer:              0.05,
 		ClaudeCodeOnly:                  true,
 		FallbackGroupID:                 groupDuplicateTestPointer(int64(7)),
 		FallbackGroupIDOnInvalidRequest: groupDuplicateTestPointer(int64(8)),
@@ -208,7 +238,10 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, source.DefaultValidityDays, duplicate.DefaultValidityDays)
 	require.Equal(t, source.ImagePrice4K, duplicate.ImagePrice4K)
 	require.Equal(t, source.VideoModelPrices, duplicate.VideoModelPrices)
+	require.Equal(t, source.ModelRateMultipliers, duplicate.ModelRateMultipliers)
 	require.Equal(t, source.WebSearchPricePerCall, duplicate.WebSearchPricePerCall)
+	require.Equal(t, source.LongContextPricingEnabled, duplicate.LongContextPricingEnabled)
+	require.Equal(t, source.ModelPricing, duplicate.ModelPricing)
 	require.Equal(t, source.FallbackGroupID, duplicate.FallbackGroupID)
 	require.Equal(t, source.ModelRouting, duplicate.ModelRouting)
 	require.Equal(t, source.MessagesDispatchModelConfig, duplicate.MessagesDispatchModelConfig)
@@ -225,20 +258,90 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 		{AccountID: 17, GroupID: duplicate.ID, Priority: 8},
 	}, repo.createdBindings[duplicate.ID])
 
+	requireGroupDuplicateCarriesEveryConfigurationField(t, source, duplicate)
+
 	duplicate.ModelRouting["gpt-*"][0] = 999
 	duplicate.VideoModelPrices[VideoPriceFamilyGrokImagineVideo15][VideoBillingResolution720P] = 999
+	duplicate.ModelRateMultipliers["gpt-5.4*"] = 999
 	duplicate.SupportedModelScopes[0] = "changed"
 	duplicate.MessagesDispatchModelConfig.ExactModelMappings["claude-special"] = "changed"
 	duplicate.ModelsListConfig.Models[0] = "changed"
 	duplicate.ReasoningEffortMappings[0].To = "changed"
+	duplicate.ModelPricing[0].Models[0] = "changed"
+	*duplicate.ModelPricing[0].InputPrice = 999
+	duplicate.ModelPricing[0].Intervals[0].TierLabel = "changed"
+	*duplicate.ModelPricing[0].Intervals[0].MaxTokens = 999
+	*duplicate.ModelPricing[0].Intervals[0].OutputPrice = 999
+	duplicate.ModelPricing[0].TimePricing.Periods[0].Multiplier = 999
 	*duplicate.DailyLimitUSD = 999
 	require.Equal(t, int64(13), source.ModelRouting["gpt-*"][0])
 	require.Equal(t, 0.14, source.VideoModelPrices[VideoPriceFamilyGrokImagineVideo15][VideoBillingResolution720P])
+	require.Equal(t, 1.3, source.ModelRateMultipliers["gpt-5.4*"])
 	require.Equal(t, "claude", source.SupportedModelScopes[0])
 	require.Equal(t, "gpt-special", source.MessagesDispatchModelConfig.ExactModelMappings["claude-special"])
 	require.Equal(t, "gpt-5.4", source.ModelsListConfig.Models[0])
 	require.Equal(t, "xhigh", source.ReasoningEffortMappings[0].To)
+	require.Equal(t, "gpt-5.4", source.ModelPricing[0].Models[0])
+	require.Equal(t, 1.25, *source.ModelPricing[0].InputPrice)
+	require.Equal(t, "<=200k", source.ModelPricing[0].Intervals[0].TierLabel)
+	require.Equal(t, 200000, *source.ModelPricing[0].Intervals[0].MaxTokens)
+	require.Equal(t, 10.0, *source.ModelPricing[0].Intervals[0].OutputPrice)
+	require.Equal(t, 0.5, source.ModelPricing[0].TimePricing.Periods[0].Multiplier)
 	require.Equal(t, 11.0, *source.DailyLimitUSD)
+}
+
+// groupDuplicateRuntimeFields are the per-row and derived fields a copy must
+// re-earn instead of inheriting from its source.
+var groupDuplicateRuntimeFields = map[string]struct{}{
+	"ID":                      {},
+	"CreatedAt":               {},
+	"UpdatedAt":               {},
+	"Hydrated":                {},
+	"AccountGroups":           {},
+	"AccountCount":            {},
+	"ActiveAccountCount":      {},
+	"RateLimitedAccountCount": {},
+}
+
+// groupDuplicateRewrittenFields are deliberately given new values by the copy
+// and are asserted one by one in the test above.
+var groupDuplicateRewrittenFields = map[string]struct{}{
+	"Name":                 {},
+	"Status":               {},
+	"DuplicateOperationID": {},
+}
+
+// requireGroupDuplicateCarriesEveryConfigurationField walks Group reflectively
+// so a field added upstream cannot be silently dropped by the hand-written
+// cloneGroupForDuplicate: either the fixture above fails to set it, or the copy
+// fails to carry it. ModelPricing and LongContextPricingEnabled were lost this
+// way once already.
+func requireGroupDuplicateCarriesEveryConfigurationField(t *testing.T, source, duplicate *Group) {
+	t.Helper()
+	rawClone := reflect.ValueOf(*cloneGroupForDuplicate(source, "reflective-field-audit"))
+	sourceFields := reflect.ValueOf(*source)
+	duplicateFields := reflect.ValueOf(*duplicate)
+	groupType := sourceFields.Type()
+
+	for i := 0; i < groupType.NumField(); i++ {
+		field := groupType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		require.False(t, sourceFields.Field(i).IsZero(),
+			"the source group above must set a non-zero %s, otherwise a copy that drops it cannot fail this test", field.Name)
+
+		if _, runtimeOnly := groupDuplicateRuntimeFields[field.Name]; runtimeOnly {
+			require.True(t, rawClone.Field(i).IsZero(),
+				"cloneGroupForDuplicate must leave the runtime field %s unset", field.Name)
+			continue
+		}
+		if _, rewritten := groupDuplicateRewrittenFields[field.Name]; rewritten {
+			continue
+		}
+		require.Equal(t, sourceFields.Field(i).Interface(), duplicateFields.Field(i).Interface(),
+			"cloneGroupForDuplicate must copy the configuration field %s", field.Name)
+	}
 }
 
 func TestDuplicateGroupRecoversSameOperationAndScopesByAdmin(t *testing.T) {
