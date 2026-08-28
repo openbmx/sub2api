@@ -4,7 +4,7 @@
 
 # Sub2API
 
-[![Go](https://img.shields.io/badge/Go-1.26.5-00ADD8.svg)](https://golang.org/)
+[![Go](https://img.shields.io/badge/Go-1.27.0-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7+-DC382D.svg)](https://redis.io/)
@@ -44,7 +44,7 @@ Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅的
 
 | 组件 | 技术 |
 |------|------|
-| 后端 | Go 1.26.5, Gin, Ent |
+| 后端 | Go 1.27.0, Gin, Ent |
 | 前端 | Vue 3.4+, Vite 5+, TailwindCSS |
 | 数据库 | PostgreSQL 15+ |
 | 缓存/队列 | Redis 7+ |
@@ -399,33 +399,6 @@ default:
   rate_multiplier: 1.0
 ```
 
-### Sora 功能状态（暂不可用）
-
-> ⚠️ 当前 Sora 相关功能因上游接入与媒体链路存在技术问题，暂时不可用。
-> 现阶段请勿在生产环境依赖 Sora 能力。
-> 文档中的 `gateway.sora_*` 配置仅作预留，待技术问题修复后再恢复可用。
-
-### Sora 媒体签名 URL（功能恢复后可选）
-
-当配置 `gateway.sora_media_signing_key` 且 `gateway.sora_media_signed_url_ttl_seconds > 0` 时，网关会将 Sora 输出的媒体地址改写为临时签名 URL（`/sora/media-signed/...`）。这样无需 API Key 即可在浏览器中直接访问，且具备过期控制与防篡改能力（签名包含 path + query）。
-
-```yaml
-gateway:
-  # /sora/media 是否强制要求 API Key（默认 false）
-  sora_media_require_api_key: false
-  # 媒体临时签名密钥（为空则禁用签名）
-  sora_media_signing_key: "your-signing-key"
-  # 临时签名 URL 有效期（秒）
-  sora_media_signed_url_ttl_seconds: 900
-```
-
-> 若未配置签名密钥，`/sora/media-signed` 将返回 503。  
-> 如需更严格的访问控制，可将 `sora_media_require_api_key` 设为 true，仅允许携带 API Key 的 `/sora/media` 访问。
-
-访问策略说明：
-- `/sora/media`：内部调用或客户端携带 API Key 才能下载
-- `/sora/media-signed`：外部可访问，但有签名 + 过期控制
-
 `config.yaml` 还支持以下安全相关配置：
 
 - `cors.allowed_origins` 配置 CORS 白名单
@@ -524,6 +497,24 @@ gateway:
 ```
 
 也可通过环境变量 `GATEWAY_OPENAI_WS_MODE_ROUTER_V2_ENABLED=true` 设置。`http_bridge` 用于「客户端 WebSocket + 上游 HTTP」的运行方式，适合灰度上线或规避上游 WebSocket 问题。
+
+#### 强制 OpenAI 上游走 HTTP/SSE
+
+当出口代理或网络导致 OpenAI Responses WebSocket 反复重连时，可在持久化的部署配置中开启全局回退：
+
+```yaml
+gateway:
+  openai_ws:
+    force_http: true
+```
+
+Compose 与 Apple container 部署对应的 `.env` 配置为：
+
+```bash
+GATEWAY_OPENAI_WS_FORCE_HTTP=true
+```
+
+该开关会让原本走 WebSocket 的 OpenAI 上游 Responses 流量改用 HTTP/SSE。它既不改变面向客户端的协议，也不会强制降级到 HTTP/1.1——若代理与 HTTP/2 不兼容，请另行配置 `gateway.openai_http2.enabled`（或 `GATEWAY_OPENAI_HTTP2_ENABLED=false`）。与账号级的 `http_bridge` 模式不同，这个全局回退无需开启 `mode_router_v2_enabled` 即可生效。请把该配置写在部署持久化的 `.env` 或 `config.yaml` 中，而不是运行中的容器内部，这样镜像更新或容器重建后仍会被读取。
 
 #### ⚠️ 重要：创建管理员账号
 
@@ -626,7 +617,7 @@ Sub2API 同时支持通过 xAI OAuth 接入的 Grok 订阅账号，以及标准�
 - Responses 端点接受 Codex CLI 风格的 WebSocket 准入，并桥接到 xAI 的 HTTP/SSE Responses 上游
 - 文本模型：`grok-4.5`、`grok-4.3`、`grok-build-0.1`、`grok-composer-2.5-fast`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-4.20-multi-agent-0309`
 - Grok 分组的媒体端点：`/v1/images/generations`、`/images/generations`、`/v1/images/edits`、`/images/edits`、`/v1/videos/generations`、`/videos/generations`、`/v1/videos/edits`、`/videos/edits`、`/v1/videos/extensions`、`/videos/extensions`、`/v1/videos/{request_id}`、`/videos/{request_id}`。生成、编辑和续拍请求需要分组具备图像生成权限
-- 媒体模型：`grok-imagine`、`grok-imagine-image-quality`、`grok-imagine-image`、`grok-imagine-edit`、`grok-imagine-video`、`grok-imagine-video-1.5`
+- 媒体模型：`grok-imagine`、`grok-imagine-image-quality`、`grok-imagine-image`、`grok-imagine-image-2.0`、`grok-imagine-edit`、`grok-imagine-video`、`grok-imagine-video-1.5`
 - JSON 格式的图像编辑与视频生成请求，可在 `image`、`images`、`reference_images`、`mask` 对象中携带图像引用。xAI 兼容载荷请使用 `url` 字段；旧版 `image_url` 字段仍被接受，转发前会归一化为 `url`
 - 不在本平台支持范围内：TTS、语音转写、浏览器自动化、cookies、Grok 网页抓取
 
