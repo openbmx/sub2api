@@ -207,7 +207,12 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 			HaikuMappedModel:   "gpt-5-mini",
 			ExactModelMappings: map[string]string{"claude-special": "gpt-special"},
 		},
-		ModelsListConfig:            GroupModelsListConfig{Enabled: true, Models: []string{"gpt-5.4", "gpt-5-mini"}},
+		ModelsListConfig: GroupModelsListConfig{Enabled: true, Models: []string{"gpt-5.4", "gpt-5-mini"}},
+		CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
+			Enabled:             true,
+			AccountIDs:          []int64{13, 17},
+			FallbackToScheduler: true,
+		},
 		RPMLimit:                    99,
 		MaxReasoningEffort:          "medium",
 		MaxReasoningEffortOverLimit: ReasoningEffortOverLimitDeny,
@@ -251,6 +256,11 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, source.ForceOpenAIFast, duplicate.ForceOpenAIFast)
 	require.Equal(t, source.FreeOpenAIFast, duplicate.FreeOpenAIFast)
 	require.Equal(t, source.ModelsListConfig, duplicate.ModelsListConfig)
+	// 固定账号 manifest 绑定的是源分组的账号 ID，副本的成员关系可能不同，
+	// 所以这一项是刻意重置而非拷贝——它列在 groupDuplicateRewrittenFields 里，
+	// 反射审计不再校验相等，改由这一条断言把「重置」这个语义钉死。
+	require.Equal(t, GroupCodexModelsManifestConfig{}, duplicate.CodexModelsManifestConfig,
+		"pinned-account manifest config must be reset, not carried into the copy")
 	require.Equal(t, source.RPMLimit, duplicate.RPMLimit)
 	require.Equal(t, source.MaxReasoningEffort, duplicate.MaxReasoningEffort)
 	require.Equal(t, source.MaxReasoningEffortOverLimit, duplicate.MaxReasoningEffortOverLimit)
@@ -315,6 +325,9 @@ var groupDuplicateRewrittenFields = map[string]struct{}{
 	"Name":                 {},
 	"Status":               {},
 	"DuplicateOperationID": {},
+	// 上游 v0.2.1 起刻意重置：manifest 里存的是源分组的账号 ID，副本的账号
+	// 成员关系可能不同，照抄会让副本指向不属于它的账号。
+	"CodexModelsManifestConfig": {},
 }
 
 // requireGroupDuplicateCarriesEveryConfigurationField walks Group reflectively
