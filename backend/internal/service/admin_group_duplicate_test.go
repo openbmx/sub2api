@@ -62,7 +62,7 @@ func cloneGroupForDuplicateTest(group *Group) *Group {
 	cloned.ModelRouting = cloneGroupModelRouting(group.ModelRouting)
 	cloned.SupportedModelScopes = append([]string(nil), group.SupportedModelScopes...)
 	cloned.MessagesDispatchModelConfig = cloneGroupMessagesDispatchModelConfig(group.MessagesDispatchModelConfig)
-	cloned.ModelsListConfig.Models = append([]string(nil), group.ModelsListConfig.Models...)
+	cloned.ModelAllowlist.Models = append([]string(nil), group.ModelAllowlist.Models...)
 	cloned.AccountGroups = append([]AccountGroup(nil), group.AccountGroups...)
 	return &cloned
 }
@@ -207,7 +207,7 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 			HaikuMappedModel:   "gpt-5-mini",
 			ExactModelMappings: map[string]string{"claude-special": "gpt-special"},
 		},
-		ModelsListConfig: GroupModelsListConfig{Enabled: true, Models: []string{"gpt-5.4", "gpt-5-mini"}},
+		ModelAllowlist: GroupModelAllowlist{Enabled: true, Models: []string{"gpt-5.4", "gpt-5-mini"}},
 		CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
 			Enabled:             true,
 			AccountIDs:          []int64{13, 17},
@@ -255,7 +255,7 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, source.MessagesDispatchModelConfig, duplicate.MessagesDispatchModelConfig)
 	require.Equal(t, source.ForceOpenAIFast, duplicate.ForceOpenAIFast)
 	require.Equal(t, source.FreeOpenAIFast, duplicate.FreeOpenAIFast)
-	require.Equal(t, source.ModelsListConfig, duplicate.ModelsListConfig)
+	require.Equal(t, source.ModelAllowlist, duplicate.ModelAllowlist)
 	// 固定账号 manifest 绑定的是源分组的账号 ID，副本的成员关系可能不同，
 	// 所以这一项是刻意重置而非拷贝——它列在 groupDuplicateRewrittenFields 里，
 	// 反射审计不再校验相等，改由这一条断言把「重置」这个语义钉死。
@@ -281,7 +281,7 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	duplicate.ModelRateMultipliers["gpt-5.4*"] = 999
 	duplicate.SupportedModelScopes[0] = "changed"
 	duplicate.MessagesDispatchModelConfig.ExactModelMappings["claude-special"] = "changed"
-	duplicate.ModelsListConfig.Models[0] = "changed"
+	duplicate.ModelAllowlist.Models[0] = "changed"
 	duplicate.ReasoningEffortMappings[0].To = "changed"
 	duplicate.ModelPricing[0].Models[0] = "changed"
 	*duplicate.ModelPricing[0].InputPrice = 999
@@ -295,7 +295,7 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, 1.3, source.ModelRateMultipliers["gpt-5.4*"])
 	require.Equal(t, "claude", source.SupportedModelScopes[0])
 	require.Equal(t, "gpt-special", source.MessagesDispatchModelConfig.ExactModelMappings["claude-special"])
-	require.Equal(t, "gpt-5.4", source.ModelsListConfig.Models[0])
+	require.Equal(t, "gpt-5.4", source.ModelAllowlist.Models[0])
 	require.Equal(t, "xhigh", source.ReasoningEffortMappings[0].To)
 	require.Equal(t, "gpt-5.4", source.ModelPricing[0].Models[0])
 	require.Equal(t, 1.25, *source.ModelPricing[0].InputPrice)
