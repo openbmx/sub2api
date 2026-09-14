@@ -36,6 +36,15 @@ func (s *AccountTestService) testCNProviderAdaptiveConnection(c *gin.Context, ac
 	// completion events until every native adaptive endpoint has passed.
 	c.Set(accountTestSuppressCompletionContextKey, true)
 	defer c.Set(accountTestSuppressCompletionContextKey, false)
+
+	// OpenCode partitions its catalog across the three endpoints — glm-* only
+	// exists on Chat Completions, minimax-*/qwen* only on Anthropic, grok-*/gpt-*
+	// only on Responses. Probing all three with one model would therefore fail on
+	// two of them every time, reporting a broken account that forwards fine.
+	if account.Platform == PlatformOpenCode {
+		return s.testOpenCodeAdaptiveConnection(c, account, modelID, testModelID, prompt, authToken)
+	}
+
 	if err := s.testCNProviderChatCompletionsConnection(c, account, modelID, prompt); err != nil {
 		return err
 	}
@@ -53,6 +62,51 @@ func (s *AccountTestService) testCNProviderAdaptiveConnection(c *gin.Context, ac
 	c.Set(accountTestSuppressCompletionContextKey, false)
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 	return nil
+}
+
+// testOpenCodeAdaptiveConnection probes only the endpoint the requested model
+// is actually served on, using the same family resolution the forward path
+// uses. The status line names the chosen endpoint so the operator can see the
+// model→endpoint mapping rather than having to infer it from a failure.
+func (s *AccountTestService) testOpenCodeAdaptiveConnection(
+	c *gin.Context, account *Account, modelID, testModelID, prompt, authToken string,
+) error {
+	protocol := resolveOpenCodeModelProtocol(account, testModelID)
+	s.sendEvent(c, TestEvent{Type: "status", Text: fmt.Sprintf(
+		"OpenCode 按模型选择端点：%s 走 %s，仅测试该端点", testModelID, openCodeProtocolDisplayName(protocol),
+	)})
+
+	switch protocol {
+	case APIProtocolAnthropic:
+		if err := s.testCNProviderAdaptiveAnthropicConnection(c, account, testModelID, authToken); err != nil {
+			return err
+		}
+	case APIProtocolResponses:
+		if err := s.testCNProviderAdaptiveResponsesConnection(c, account, testModelID, authToken); err != nil {
+			return err
+		}
+	default:
+		// Chat Completions owns the SSE lifecycle and does its own model
+		// mapping, so it takes the raw model id like the non-OpenCode path.
+		if err := s.testCNProviderChatCompletionsConnection(c, account, modelID, prompt); err != nil {
+			return err
+		}
+	}
+
+	c.Set(accountTestSuppressCompletionContextKey, false)
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
+}
+
+func openCodeProtocolDisplayName(protocol string) string {
+	switch protocol {
+	case APIProtocolAnthropic:
+		return "Anthropic /v1/messages"
+	case APIProtocolResponses:
+		return "Responses /v1/responses"
+	default:
+		return "Chat Completions /v1/chat/completions"
+	}
 }
 
 func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Context, account *Account, testModelID string, authToken string) error {
