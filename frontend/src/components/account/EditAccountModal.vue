@@ -675,6 +675,14 @@
         </div>
       </div>
 
+      <!-- OpenCode 按模型选端点：仅自适应协议下参与决策 -->
+      <div
+        v-if="showOpenCodeModelProtocols"
+        class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+      >
+        <OpenCodeModelProtocolEditor v-model="openCodeModelProtocolRows" />
+      </div>
+
       <!-- OpenAI/Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
         v-if="(account.platform === 'openai' || account.platform === 'grok') && account.type === 'oauth'"
@@ -2996,11 +3004,16 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import OpenCodeModelProtocolEditor from '@/components/account/OpenCodeModelProtocolEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import {
   applyAntigravityProjectID,
   applyHeaderOverride,
   applyInterceptWarmup,
+  applyOpenCodeModelProtocols,
+  isOpenCodeModelProtocolCapable,
+  readOpenCodeModelProtocolRows,
+  type OpenCodeModelProtocolRow,
   applyPlanType,
   buildPlanTypeOptions,
   readPlanType,
@@ -3294,6 +3307,15 @@ const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 
 const headerOverrideCapable = computed(
   () => !!props.account && isHeaderOverrideCapable(props.account.platform, props.account.type)
+)
+
+// OpenCode 模型 → 协议映射。固定协议下后端不读它，隐藏以免给出「配了却不生效」的错觉。
+const openCodeModelProtocolRows = ref<OpenCodeModelProtocolRow[]>([])
+const showOpenCodeModelProtocols = computed(
+  () =>
+    !!props.account &&
+    isOpenCodeModelProtocolCapable(props.account.platform, props.account.type) &&
+    editApiProtocol.value === 'adaptive'
 )
 
 // Grok OAuth 自定义上游地址（仅转发端点；OAuth 授权/令牌刷新不受影响）
@@ -4069,6 +4091,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       overrideCreds[HEADER_OVERRIDES_CREDENTIAL_KEY]
     )
   }
+
+  openCodeModelProtocolRows.value = isOpenCodeModelProtocolCapable(newAccount.platform, newAccount.type)
+    ? readOpenCodeModelProtocolRows(newAccount.credentials as Record<string, unknown> | undefined)
+    : []
 
   // Load Grok OAuth custom upstream URL state（存储的官方地址视同未定制）
   grokOAuthCustomBaseUrlEnabled.value = false
@@ -4992,6 +5018,9 @@ const handleSubmit = async () => {
           }
         }
         applyHeaderOverride(newCredentials, headerOverrideEnabled.value, headerOverrideRows.value, 'edit')
+      }
+      if (isOpenCodeModelProtocolCapable(props.account.platform, 'apikey')) {
+        applyOpenCodeModelProtocols(newCredentials, openCodeModelProtocolRows.value, 'edit')
       }
 
       // Add intercept warmup requests setting

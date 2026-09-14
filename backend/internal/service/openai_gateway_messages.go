@@ -33,6 +33,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	// OpenCode 按模型而非按入站协议决定端点，必须在任何分流之前把协议钉死。
+	account = s.resolveOpenCodeRequestAccount(account, body, defaultMappedModel)
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {

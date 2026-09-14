@@ -82,6 +82,32 @@ type Account struct {
 	headerOverrideCacheRawPtr         uintptr
 	headerOverrideCacheRawLen         int
 	headerOverrideCacheRawSig         uint64
+
+	// 按请求解析出的协议与端点（非持久化字段）。仅 OpenCode 使用：它按模型而非
+	// 按入站协议决定端点，所以 adaptive 账号需要逐请求改写。空串表示未改写，
+	// 取值一律回落账号本身的配置。见 withResolvedUpstreamProtocol。
+	resolvedProtocolOverride string
+	resolvedBaseURLOverride  string
+}
+
+// withResolvedUpstreamProtocol 返回一个把协议与端点钉死为本次请求解析值的浅拷贝。
+//
+// 之所以做拷贝而不是在 20+ 个判断点逐个传参：GetAPIProtocol 及其派生
+// （IsAdaptiveAPIProtocol / IsAnthropicProtocol / UsesNativeCNResponses /
+// GetCNProtocolBaseURL）是所有路由决策的单一来源，改写它等于一次性改写全部下游。
+//
+// **Credentials 沿用同一个 map 指针**：model_mapping 与 header_overrides 的热路径
+// 缓存都按 Credentials 指针校验，换新 map 会让每个请求重新解析一遍 JSON。
+// 代价是拷贝与原账号共享该 map——**转发路径只读 Credentials，不得写入**，
+// 否则会串回原账号。
+func (a *Account) withResolvedUpstreamProtocol(protocol, baseURL string) *Account {
+	if a == nil || protocol == "" {
+		return a
+	}
+	cloned := *a
+	cloned.resolvedProtocolOverride = protocol
+	cloned.resolvedBaseURLOverride = baseURL
+	return &cloned
 }
 
 type OpenAIEndpointCapability string
@@ -1339,6 +1365,11 @@ func (a *Account) GetOpenAIBaseURL() string {
 	if !a.IsOpenAI() && !a.IsCNProvider() {
 		return ""
 	}
+	// 协议被逐请求改写后，端点也必须跟着走解析结果，否则会退回平台默认而丢掉
+	// 运维在「协议端点」里填的自定义地址。
+	if a.resolvedProtocolOverride != "" && a.resolvedBaseURLOverride != "" {
+		return a.resolvedBaseURLOverride
+	}
 	if a.IsCNProvider() && a.IsAdaptiveAPIProtocol() {
 		if baseURLs, ok := a.Credentials["api_base_urls"].(map[string]any); ok {
 			if baseURL, ok := baseURLs[APIProtocolChatCompletions].(string); ok && strings.TrimSpace(baseURL) != "" {
@@ -1403,6 +1434,10 @@ func (a *Account) GetAPIProtocol() string {
 	if a == nil || !a.IsCNProvider() {
 		return APIProtocolChatCompletions
 	}
+	// 本次请求已按模型解析出协议（OpenCode），它取代账号上的 adaptive 配置。
+	if a.resolvedProtocolOverride != "" {
+		return a.resolvedProtocolOverride
+	}
 	switch strings.TrimSpace(a.GetCredential("api_protocol")) {
 	case APIProtocolAdaptive:
 		return APIProtocolAdaptive
@@ -1459,6 +1494,12 @@ func (a *Account) IsAdaptiveAPIProtocol() bool {
 func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 	if a == nil || !a.IsCNProvider() {
 		return ""
+	}
+	// 只在询问的正是本次解析出的那个协议时返回覆写值；其余协议仍按原逻辑取，
+	// 以免把一个协议的端点错当成另一个协议的。
+	if a.resolvedProtocolOverride != "" && a.resolvedBaseURLOverride != "" &&
+		protocol == a.resolvedProtocolOverride {
+		return a.resolvedBaseURLOverride
 	}
 	if a.IsAdaptiveAPIProtocol() {
 		if baseURLs, ok := a.Credentials["api_base_urls"].(map[string]any); ok {
@@ -1534,6 +1575,11 @@ func (a *Account) IsAnthropicProtocol() bool {
 func (a *Account) GetAnthropicProtocolBaseURL() string {
 	if a == nil || (!a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol()) {
 		return ""
+	}
+	// 本次请求已解析为 Anthropic：直接用解析出的端点，不再走 base_url 凭证，
+	// 那里存的是 Chat Completions 地址。
+	if a.resolvedProtocolOverride == APIProtocolAnthropic && a.resolvedBaseURLOverride != "" {
+		return a.resolvedBaseURLOverride
 	}
 	if a.IsAdaptiveAPIProtocol() {
 		return a.GetCNProtocolBaseURL(APIProtocolAnthropic)

@@ -426,6 +426,79 @@ export function applyHeaderOverride(
   }
 }
 
+// ===== OpenCode 模型 → 协议映射覆盖 =====
+// OpenCode 按模型而非按入站协议决定端点。后端内置了族前缀表（minimax-/qwen →
+// Anthropic，grok-/gpt-/muse-spark- → Responses，glm-/kimi-/deepseek-/mimo-/
+// longcat-/hy+数字 → Chat Completions），新型号自动生效；本表用于补全新系列或
+// 纠正内置判断，优先级高于内置表。与后端 credKeyOpenCodeModelProtocols 对应。
+
+export const OPENCODE_MODEL_PROTOCOLS_CREDENTIAL_KEY = 'opencode_model_protocols'
+
+/** 与后端 MaxOpenCodeModelProtocolOverrides 保持一致。 */
+export const MAX_OPENCODE_MODEL_PROTOCOLS = 32
+
+/** adaptive 是路由策略而非目的地，不能作为映射目标。 */
+export const OPENCODE_NATIVE_PROTOCOLS: CnNativeApiProtocol[] = [
+  'chat_completions',
+  'anthropic',
+  'responses'
+]
+
+export interface OpenCodeModelProtocolRow {
+  prefix: string
+  protocol: CnNativeApiProtocol
+}
+
+export function isOpenCodeModelProtocolCapable(platform: string, type: string): boolean {
+  return platform === 'opencode' && type === 'apikey'
+}
+
+/** 读 credentials 还原成可编辑的行；非法条目直接丢弃，与后端转发路径一致。 */
+export function readOpenCodeModelProtocolRows(
+  credentials: Record<string, unknown> | null | undefined
+): OpenCodeModelProtocolRow[] {
+  const raw = credentials?.[OPENCODE_MODEL_PROTOCOLS_CREDENTIAL_KEY]
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
+  const rows: OpenCodeModelProtocolRow[] = []
+  for (const [prefix, value] of Object.entries(raw as Record<string, unknown>)) {
+    const trimmed = prefix.trim().toLowerCase()
+    const protocol = String(value ?? '').trim().toLowerCase() as CnNativeApiProtocol
+    if (!trimmed || !OPENCODE_NATIVE_PROTOCOLS.includes(protocol)) continue
+    rows.push({ prefix: trimmed, protocol })
+  }
+  return rows
+}
+
+/** 空前缀行是清空输入框留下的，直接丢弃而不是报错。 */
+export function buildOpenCodeModelProtocolsObject(
+  rows: OpenCodeModelProtocolRow[]
+): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const row of rows) {
+    const prefix = row.prefix.trim().toLowerCase()
+    if (!prefix || !OPENCODE_NATIVE_PROTOCOLS.includes(row.protocol)) continue
+    result[prefix] = row.protocol
+  }
+  return result
+}
+
+/**
+ * 写入 credentials。create 模式下空表不写字段（保持 credentials 精简）；
+ * edit 模式下空表删除字段，与请求头覆写的全量替换语义一致。
+ */
+export function applyOpenCodeModelProtocols(
+  credentials: Record<string, unknown>,
+  rows: OpenCodeModelProtocolRow[],
+  mode: 'create' | 'edit'
+): void {
+  const mapping = buildOpenCodeModelProtocolsObject(rows)
+  if (Object.keys(mapping).length > 0) {
+    credentials[OPENCODE_MODEL_PROTOCOLS_CREDENTIAL_KEY] = mapping
+  } else if (mode === 'edit') {
+    delete credentials[OPENCODE_MODEL_PROTOCOLS_CREDENTIAL_KEY]
+  }
+}
+
 // ===== OpenAI plan_type (ChatGPT 订阅档位) 手动覆盖 =====
 
 export interface PlanTypeOption {

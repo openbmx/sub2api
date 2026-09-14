@@ -1785,6 +1785,14 @@
           </div>
         </div>
 
+        <!-- OpenCode 按模型选端点：仅自适应协议下需要，固定协议时该映射不参与决策 -->
+        <div
+          v-if="showOpenCodeModelProtocols"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
+          <OpenCodeModelProtocolEditor v-model="openCodeModelProtocolRows" />
+        </div>
+
       </div>
 
       <!-- Bedrock credentials (only for Anthropic Bedrock type) -->
@@ -3880,22 +3888,26 @@ import Toggle from '@/components/common/Toggle.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import OpenCodeModelProtocolEditor from '@/components/account/OpenCodeModelProtocolEditor.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import {
   applyAntigravityProjectID,
   applyHeaderOverride,
   applyInterceptWarmup,
+  applyOpenCodeModelProtocols,
   cnSupportsNativeResponses,
   defaultCNAdaptiveBaseUrls,
   defaultCNBaseUrl,
   isCNProviderPlatform,
   isHeaderOverrideCapable,
+  isOpenCodeModelProtocolCapable,
   validateHeaderOverrideRows,
   type CnAccountMode,
   type CnApiProtocol,
   type CnNativeApiProtocol,
   type CnProviderPlatform,
-  type HeaderOverrideRow
+  type HeaderOverrideRow,
+  type OpenCodeModelProtocolRow
 } from '@/components/account/credentialsBuilder'
 import {
   formatDateTimeLocalInput,
@@ -4284,6 +4296,14 @@ const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
+
+// OpenCode 模型 → 协议映射。仅自适应协议下参与决策，固定协议时后端不会读它，
+// 所以固定协议下直接隐藏，避免给出「配了却不生效」的错觉。
+const openCodeModelProtocolRows = ref<OpenCodeModelProtocolRow[]>([])
+const showOpenCodeModelProtocols = computed(
+  () =>
+    isOpenCodeModelProtocolCapable(form.platform, form.type) && apiProtocol.value === 'adaptive'
+)
 
 // Grok OAuth：自定义上游地址（base_url 仅改写转发端点，OAuth 授权/刷新不受影响）
 const grokOAuthCustomBaseUrlEnabled = ref(false)
@@ -5746,6 +5766,9 @@ const handleSubmit = async () => {
       }
     }
     applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'create')
+  }
+  if (showOpenCodeModelProtocols.value) {
+    applyOpenCodeModelProtocols(credentials, openCodeModelProtocolRows.value, 'create')
   }
 
   applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')

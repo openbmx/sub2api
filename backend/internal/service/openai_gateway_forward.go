@@ -19,6 +19,8 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	// OpenCode 按模型而非按入站协议决定端点，必须在任何分流之前把协议钉死。
+	account = s.resolveOpenCodeRequestAccount(account, body, "")
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {

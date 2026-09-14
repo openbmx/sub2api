@@ -313,6 +313,15 @@ export default {
         minimax: 'MiniMax',
         opencode: 'OpenCode',
       },
+      opencodeModelProtocols: {
+        title: '模型协议映射',
+        add: '添加映射',
+        prefix: '模型前缀',
+        protocol: '协议',
+        prefixPlaceholder: '如 omen-',
+        remove: '删除该映射',
+        hint: 'OpenCode 按模型决定走哪个端点。已内置族前缀表（minimax-/qwen → Anthropic，grok-/gpt-/muse-spark- → Responses，glm-/kimi-/deepseek-/mimo-/longcat-/hy+数字 → Chat Completions），同族新型号自动生效，通常无需配置。仅当 OpenCode 上线全新系列、或内置判断有误时在此补充，优先级高于内置表。仅「自适应」协议下生效。',
+      },
       cnProviders: {
         accountMode: {
           title: '账号类型',

@@ -110,6 +110,15 @@ export default {
         minimax: 'MiniMax',
         opencode: 'OpenCode',
       },
+      opencodeModelProtocols: {
+        title: 'Model protocol mapping',
+        add: 'Add mapping',
+        prefix: 'Model prefix',
+        protocol: 'Protocol',
+        prefixPlaceholder: 'e.g. omen-',
+        remove: 'Remove this mapping',
+        hint: 'OpenCode picks the endpoint per model. A family table is built in (minimax-/qwen → Anthropic, grok-/gpt-/muse-spark- → Responses, glm-/kimi-/deepseek-/mimo-/longcat-/hy+digit → Chat Completions), so new models in a known family work on day one and no configuration is normally needed. Add entries here only when OpenCode ships a brand-new family, or to correct a built-in guess; these win over the built-in table. Applies only under the Adaptive protocol.',
+      },
       cnProviders: {
         accountMode: {
           title: 'Account Type',
