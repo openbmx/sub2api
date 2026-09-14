@@ -24,10 +24,14 @@ const (
 	PlatformAntigravity = "antigravity"
 	PlatformGrok        = "grok"
 	// 国产 OpenAI 兼容供应商（经 OpenAI 网关转发，按 Chat Completions 协议）。
-	PlatformKimi      = "kimi"     // Kimi (月之暗面 / Moonshot)
-	PlatformZhipu     = "zhipu"    // 智谱 GLM (bigmodel)
-	PlatformDeepseek  = "deepseek" // DeepSeek
-	PlatformMiniMax   = "minimax"  // MiniMax (M 系列)
+	PlatformKimi     = "kimi"     // Kimi (月之暗面 / Moonshot)
+	PlatformZhipu    = "zhipu"    // 智谱 GLM (bigmodel)
+	PlatformDeepseek = "deepseek" // DeepSeek
+	PlatformMiniMax  = "minimax"  // MiniMax (M 系列)
+	// PlatformOpenCode 与上面四家同型：多协议 OpenAI 兼容上游，按 account_mode
+	// 区分订阅（Go）与按量（Zen）。它不是国产供应商，但复用同一套「模式 × 协议 ×
+	// 分协议端点」抽象，所以归在 IsCNProvider 家族里（见 service.IsCNProvider 注释）。
+	PlatformOpenCode  = "opencode" // OpenCode (Go 订阅 / Zen 按量)
 	PlatformComposite = "composite"
 )
 

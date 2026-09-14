@@ -470,6 +470,7 @@ const clientTabs = computed((): TabConfig[] => {
       ]
     case 'deepseek':
     case 'minimax':
+    case 'opencode':
     case 'composite':
       return [
         { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
@@ -771,6 +772,11 @@ const currentFiles = computed((): FileConfig[] => {
     case 'minimax':
       if (activeClientTab.value === 'codex') {
         return generateRoutedCodexFiles(apiBase, apiKey, 'minimax')
+      }
+      return generateAnthropicFiles(baseRoot, apiKey)
+    case 'opencode':
+      if (activeClientTab.value === 'codex') {
+        return generateRoutedCodexFiles(apiBase, apiKey, 'opencode')
       }
       return generateAnthropicFiles(baseRoot, apiKey)
     case 'composite':
@@ -1236,6 +1242,9 @@ function generateRoutedCodexFiles(
     zhipu: 'glm-4.7',
     deepseek: 'deepseek-v4-pro',
     minimax: 'MiniMax-M3',
+    // OpenCode resells other vendors' models under their own names; kimi-k3 is
+    // the example the docs use for the opencode-go prefix form.
+    opencode: 'kimi-k3',
     composite: 'gpt-5.5'
   }
   const preferredModel = preferredModels[platform] || ''
@@ -1250,6 +1259,7 @@ function generateRoutedCodexFiles(
     zhipu: 'Zhipu',
     deepseek: 'DeepSeek',
     minimax: 'MiniMax',
+    opencode: 'OpenCode',
     composite: 'Composite'
   }
   const label = labels[platform]

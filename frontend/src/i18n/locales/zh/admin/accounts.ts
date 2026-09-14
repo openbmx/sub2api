@@ -311,6 +311,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
+        opencode: 'OpenCode',
       },
       cnProviders: {
         accountMode: {

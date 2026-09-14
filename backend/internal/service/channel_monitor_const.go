@@ -70,6 +70,9 @@ const (
 	MonitorProviderZhipu       = "zhipu"
 	MonitorProviderDeepseek    = "deepseek"
 	MonitorProviderMiniMax     = "minimax"
+	// OpenCode 复用 OpenAI 兼容探活。它没有公开的用量/额度端点，所以配额模式会
+	// 落到 AccountUsageService 的本地统计，与 gemini/grok 同型降级而非永久 error。
+	MonitorProviderOpenCode = "opencode"
 
 	// MonitorCheckMode 检测模式（channel_monitors.check_mode）。
 	//   probe       - LLM 探活（默认，原有行为）

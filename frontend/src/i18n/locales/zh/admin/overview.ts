@@ -944,6 +944,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
+        opencode: 'OpenCode',
         composite: 'Composite',
       },
       saving: '保存中...',

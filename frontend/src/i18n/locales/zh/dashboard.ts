@@ -478,7 +478,8 @@ export default {
       kimi: 'Kimi',
       zhipu: '智谱 GLM',
       deepseek: 'DeepSeek',
-      minimax: 'MiniMax'
+      minimax: 'MiniMax',
+      opencode: 'OpenCode'
     },
     // 检查模式（监控条目的工作方式）
     checkMode: {

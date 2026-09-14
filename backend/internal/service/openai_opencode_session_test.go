@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -92,11 +93,6 @@ func TestApplyOpenCodeSessionHeaderTrustBoundary(t *testing.T) {
 			incoming:  "conversation-123",
 		},
 		{
-			name:      "missing caller value",
-			account:   openCodeSessionTestAccount("https://opencode.ai/zen/v1"),
-			targetURL: "https://opencode.ai/zen/v1/responses",
-		},
-		{
 			name:      "oauth account",
 			account:   &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
 			targetURL: "https://opencode.ai/zen/v1/responses",
@@ -107,10 +103,82 @@ func TestApplyOpenCodeSessionHeaderTrustBoundary(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			headers := make(http.Header)
-			applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, tt.incoming), tt.account, tt.targetURL, headers)
+			applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, tt.incoming), tt.account, tt.targetURL, headers, nil)
 			require.Equal(t, tt.want, headers.Get(openCodeSessionHeader))
 		})
 	}
+
+	// Only the trust boundary suppresses the header. On the official origin a
+	// caller that sends nothing still gets one, because OpenCode rejects the
+	// request outright without it.
+	t.Run("missing caller value falls back instead of omitting", func(t *testing.T) {
+		headers := make(http.Header)
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, ""),
+			openCodeSessionTestAccount("https://opencode.ai/zen/v1"),
+			"https://opencode.ai/zen/v1/responses", headers, nil)
+		require.NotEmpty(t, headers.Get(openCodeSessionHeader))
+		require.True(t, strings.HasPrefix(headers.Get(openCodeSessionHeader), "sub2api-apikey-"))
+	})
+}
+
+// A plain OpenAI SDK client sends no session identity of any kind. Before the
+// fallback existed this was a hard 400 MissingSessionID from OpenCode, which
+// made the platform unusable for everything except Claude Code and Codex.
+func TestOpenCodeSessionFallbackTiers(t *testing.T) {
+	account := openCodeSessionTestAccount("https://opencode.ai/zen/v1")
+	const targetURL = "https://opencode.ai/zen/v1/chat/completions"
+
+	t.Run("explicit caller header is forwarded verbatim", func(t *testing.T) {
+		headers := make(http.Header)
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, "caller-chosen"), account, targetURL, headers, nil)
+		require.Equal(t, "caller-chosen", headers.Get(openCodeSessionHeader))
+	})
+
+	t.Run("recognized conversation header is hashed, not forwarded", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		c.Request.Header.Set("X-Session-Id", "claude-code-conversation-uuid")
+
+		headers := make(http.Header)
+		applyOpenCodeSessionHeader(c, account, targetURL, headers, nil)
+		got := headers.Get(openCodeSessionHeader)
+		require.True(t, strings.HasPrefix(got, "sub2api-conversation-"))
+		require.NotContains(t, got, "claude-code-conversation-uuid")
+	})
+
+	t.Run("prompt_cache_key in the body is used before the coarse fallback", func(t *testing.T) {
+		headers := make(http.Header)
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, ""), account, targetURL, headers,
+			[]byte(`{"model":"kimi-k3","prompt_cache_key":"turn-42","messages":[]}`))
+		require.True(t, strings.HasPrefix(headers.Get(openCodeSessionHeader), "sub2api-conversation-"))
+	})
+
+	t.Run("derivation is stable across calls", func(t *testing.T) {
+		first, second := make(http.Header), make(http.Header)
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, ""), account, targetURL, first, nil)
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, ""), account, targetURL, second, nil)
+		require.Equal(t, first.Get(openCodeSessionHeader), second.Get(openCodeSessionHeader))
+	})
+
+	// A bare Go-http-client agent is the case OpenCode's docs call out by name,
+	// so an empty header must never reach them.
+	t.Run("fills a missing user agent with a recognized client identity", func(t *testing.T) {
+		filled := make(http.Header)
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, ""), account, targetURL, filled, nil)
+		got := filled.Get("User-Agent")
+		require.Equal(t, claude.DefaultHeaders["User-Agent"], got)
+		require.True(t, strings.HasPrefix(got, "claude-cli/"))
+		require.Contains(t, got, claude.CLIVersion(),
+			"must track the same version source as the Anthropic path, not a hardcoded copy")
+	})
+
+	t.Run("never clobbers an agent the client already sent", func(t *testing.T) {
+		kept := make(http.Header)
+		kept.Set("User-Agent", "codex_cli_rs/0.58.0")
+		applyOpenCodeSessionHeader(newOpenCodeSessionTestContext(t, ""), account, targetURL, kept, nil)
+		require.Equal(t, "codex_cli_rs/0.58.0", kept.Get("User-Agent"))
+	})
 }
 
 func TestOpenCodeSessionForwardedByResponsesBuildersAfterAccountOverride(t *testing.T) {

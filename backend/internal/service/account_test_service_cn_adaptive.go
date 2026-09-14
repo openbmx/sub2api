@@ -85,6 +85,9 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 	// base_url 强制 Bearer，其余保持 extra/default 行为。
 	setAnthropicAPIKeyAuthHeader(req.Header, account, authToken, account.GetCNProtocolBaseURL(APIProtocolAnthropic))
 	account.ApplyHeaderOverrides(req.Header)
+	// 与真实转发同款会话头：OpenCode 缺它一律 400，测试若不带就只会报一个与
+	// 凭据无关的错，把运维引向错误的方向。
+	applyOpenCodeSessionHeader(c, account, apiURL, req.Header, payloadBytes)
 
 	resp, err := s.doCNProviderAdaptiveRequest(req, account)
 	if err != nil {
@@ -178,6 +181,7 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 	req.Header.Set("Authorization", "Bearer "+authToken)
 	applyOpenAICodexProbeHeaders(req.Header)
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenCodeSessionHeader(c, account, apiURL, req.Header, payloadBytes)
 
 	resp, err := s.doCNProviderAdaptiveRequest(req, account)
 	if err != nil {
@@ -266,6 +270,7 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 	// extra/default 行为。
 	setAnthropicAPIKeyAuthHeader(req.Header, account, authToken, account.GetAnthropicProtocolBaseURL())
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenCodeSessionHeader(c, account, apiURL, req.Header, payloadBytes)
 
 	resp, err := s.doCNProviderAdaptiveRequest(req, account)
 	if err != nil {

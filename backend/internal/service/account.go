@@ -1367,6 +1367,11 @@ func (a *Account) GetOpenAIBaseURL() string {
 		return DefaultDeepseekBaseURL
 	case PlatformMiniMax:
 		return DefaultMiniMaxBaseURL
+	case PlatformOpenCode:
+		if a.GetAccountMode() == AccountModeCoding {
+			return DefaultOpenCodeGoBaseURL
+		}
+		return DefaultOpenCodeZenBaseURL
 	default:
 		return "https://api.openai.com"
 	}
@@ -1413,15 +1418,16 @@ func (a *Account) GetAPIProtocol() string {
 	return APIProtocolChatCompletions
 }
 
-// SupportsNativeCNResponses 报告该国产供应商是否提供原生 Responses 端点。
+// SupportsNativeCNResponses 报告该供应商是否提供原生 Responses 端点。
 // DeepSeek 官方为 /responses（无 /v1）；Kimi 按量付费与 Coding Plan 均为
-// /v1/responses（moonshot.cn / kimi.com/coding）；MiniMax 为 /v1/responses。
+// /v1/responses（moonshot.cn / kimi.com/coding）；MiniMax 为 /v1/responses；
+// OpenCode 为 {zen 前缀}/v1/responses（Grok 4.6 / GPT 5.6 Luna 等模型走该端点）。
 func (a *Account) SupportsNativeCNResponses() bool {
 	if a == nil {
 		return false
 	}
 	switch a.Platform {
-	case PlatformDeepseek, PlatformKimi, PlatformMiniMax:
+	case PlatformDeepseek, PlatformKimi, PlatformMiniMax, PlatformOpenCode:
 		return true
 	default:
 		return false
@@ -1484,6 +1490,11 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultDeepseekAnthropicBaseURL
 		case PlatformMiniMax:
 			return DefaultMiniMaxAnthropicBaseURL
+		case PlatformOpenCode:
+			if a.GetAccountMode() == AccountModeCoding {
+				return DefaultOpenCodeGoAnthropicBaseURL
+			}
+			return DefaultOpenCodeZenAnthropicBaseURL
 		}
 	case APIProtocolChatCompletions, APIProtocolResponses:
 		switch a.Platform {
@@ -1501,6 +1512,11 @@ func (a *Account) defaultCNProtocolBaseURL(protocol string) string {
 			return DefaultDeepseekBaseURL
 		case PlatformMiniMax:
 			return DefaultMiniMaxBaseURL
+		case PlatformOpenCode:
+			if a.GetAccountMode() == AccountModeCoding {
+				return DefaultOpenCodeGoBaseURL
+			}
+			return DefaultOpenCodeZenBaseURL
 		}
 	}
 	return ""
@@ -1539,6 +1555,11 @@ func (a *Account) GetAnthropicProtocolBaseURL() string {
 		return DefaultDeepseekAnthropicBaseURL
 	case PlatformMiniMax:
 		return DefaultMiniMaxAnthropicBaseURL
+	case PlatformOpenCode:
+		if a.GetAccountMode() == AccountModeCoding {
+			return DefaultOpenCodeGoAnthropicBaseURL
+		}
+		return DefaultOpenCodeZenAnthropicBaseURL
 	default:
 		return ""
 	}
@@ -1568,6 +1589,14 @@ func (a *Account) GetOpenAIFormatBaseURL() string {
 		return DefaultDeepseekBaseURL
 	case PlatformMiniMax:
 		return DefaultMiniMaxBaseURL
+	case PlatformOpenCode:
+		// Must be explicit rather than falling through to GetOpenAIBaseURL: on an
+		// anthropic-protocol account the stored base_url points at the Anthropic
+		// endpoint, which is exactly the confusion this function exists to avoid.
+		if a.GetAccountMode() == AccountModeCoding {
+			return DefaultOpenCodeGoBaseURL
+		}
+		return DefaultOpenCodeZenBaseURL
 	default:
 		return a.GetOpenAIBaseURL()
 	}
@@ -1582,8 +1611,9 @@ func (a *Account) GetCNAPIKey() string {
 	return a.GetCredential("api_key")
 }
 
-// GetCodingPlanProvider 根据 base_url 识别 Coding Plan 供应商（kimi / zhipu / minimax），
-// 用于路由到对应的额度查询端点。非 coding 模式或无法识别时返回空串。
+// GetCodingPlanProvider 根据 base_url 识别 Coding Plan 供应商
+// （kimi / zhipu / minimax / opencode），用于路由到对应的额度查询端点。
+// 非 coding 模式或无法识别时返回空串。
 // 只认官方域名：自定义中转不得把第三方 Key 发往厂商官方额度端点。
 func (a *Account) GetCodingPlanProvider() string {
 	if a == nil || a.GetAccountMode() != AccountModeCoding {
@@ -1599,6 +1629,10 @@ func (a *Account) GetCodingPlanProvider() string {
 		strings.Contains(baseURL, "minimaxi.com"),
 		strings.Contains(baseURL, "minimax.com"):
 		return PlatformMiniMax
+	// 只有 Go 订阅（/zen/go）暴露 usage 端点；Zen 按量的余额没有 Key 可读的 API，
+	// 所以路径前缀是识别条件的一部分而不只是域名。
+	case strings.Contains(baseURL, "opencode.ai/zen/go"):
+		return PlatformOpenCode
 	default:
 		return ""
 	}

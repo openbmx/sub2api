@@ -43,7 +43,8 @@ export function isHeaderOverrideCapable(platform: string, type: string): boolean
     platform === 'kimi' ||
     platform === 'zhipu' ||
     platform === 'deepseek' ||
-    platform === 'minimax'
+    platform === 'minimax' ||
+    platform === 'opencode'
   ) {
     return type === 'apikey'
   }
@@ -256,19 +257,29 @@ export const GROK_BASE_URL_PRESETS: GrokBaseUrlPreset[] = [
 // 两者正交。同协议请求零转换直通，跨协议组合才走转换链。
 
 export type CnAccountMode = 'payg' | 'coding'
-export type CnProviderPlatform = 'kimi' | 'zhipu' | 'deepseek' | 'minimax'
+// opencode 不是国产供应商，但复用同一套「模式 × 协议 × 分协议端点」结构，
+// 与后端 service.IsCNProvider 一一对应。
+export type CnProviderPlatform = 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode'
 
-/** deepseek / kimi / minimax 支持原生 responses；adaptive 会按入站协议选择原生端点。 */
+/** deepseek / kimi / minimax / opencode 支持原生 responses；adaptive 会按入站协议选择原生端点。 */
 export type CnApiProtocol = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
 export type CnNativeApiProtocol = Exclude<CnApiProtocol, 'adaptive'>
 
 export function isCNProviderPlatform(platform: string): platform is CnProviderPlatform {
-  return platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax'
+  return (
+    platform === 'kimi' ||
+    platform === 'zhipu' ||
+    platform === 'deepseek' ||
+    platform === 'minimax' ||
+    platform === 'opencode'
+  )
 }
 
-/** DeepSeek、Kimi 与 MiniMax 提供原生 Responses 端点。 */
+/** DeepSeek、Kimi、MiniMax 与 OpenCode 提供原生 Responses 端点。 */
 export function cnSupportsNativeResponses(platform: string): boolean {
-  return platform === 'deepseek' || platform === 'kimi' || platform === 'minimax'
+  return (
+    platform === 'deepseek' || platform === 'kimi' || platform === 'minimax' || platform === 'opencode'
+  )
 }
 
 export interface CnBaseUrlPreset {
@@ -313,6 +324,16 @@ export const CN_BASE_URL_PRESETS: Record<CnProviderPlatform, CnBaseUrlPreset[]> 
     { mode: 'coding', protocol: 'chat_completions', label: 'MiniMax Coding Intl', url: 'https://api.minimax.io/v1' },
     { mode: 'coding', protocol: 'anthropic', label: 'MiniMax Coding Intl Anthropic', url: 'https://api.minimax.io/anthropic' },
     { mode: 'coding', protocol: 'responses', label: 'MiniMax Coding Intl Responses', url: 'https://api.minimax.io/v1' }
+  ],
+  // OpenCode：Coding Plan = Go 订阅（/zen/go），按量付费 = Zen 余额（/zen）。
+  // Anthropic 端点少一个 /v1，因为后端拼接时会追加 /v1/messages。
+  opencode: [
+    { mode: 'coding', protocol: 'chat_completions', label: 'OpenCode Go', url: 'https://opencode.ai/zen/go/v1' },
+    { mode: 'coding', protocol: 'anthropic', label: 'OpenCode Go Anthropic', url: 'https://opencode.ai/zen/go' },
+    { mode: 'coding', protocol: 'responses', label: 'OpenCode Go Responses', url: 'https://opencode.ai/zen/go/v1' },
+    { mode: 'payg', protocol: 'chat_completions', label: 'OpenCode Zen', url: 'https://opencode.ai/zen/v1' },
+    { mode: 'payg', protocol: 'anthropic', label: 'OpenCode Zen Anthropic', url: 'https://opencode.ai/zen' },
+    { mode: 'payg', protocol: 'responses', label: 'OpenCode Zen Responses', url: 'https://opencode.ai/zen/v1' }
   ]
 }
 
@@ -332,6 +353,8 @@ export function defaultCNBaseUrl(
         return 'https://api.deepseek.com/anthropic'
       case 'minimax':
         return 'https://api.minimaxi.com/anthropic'
+      case 'opencode':
+        return mode === 'coding' ? 'https://opencode.ai/zen/go' : 'https://opencode.ai/zen'
       default:
         return ''
     }
@@ -348,6 +371,8 @@ export function defaultCNBaseUrl(
       return 'https://api.deepseek.com'
     case 'minimax':
       return 'https://api.minimaxi.com/v1'
+    case 'opencode':
+      return mode === 'coding' ? 'https://opencode.ai/zen/go/v1' : 'https://opencode.ai/zen/v1'
     default:
       return ''
   }
@@ -370,7 +395,12 @@ export function defaultCNAdaptiveBaseUrls(
 // 共用，避免多处复制条件后一处改另一处漏改。
 
 export function cnQuotaCellVisible(platform: string, accountMode: string): boolean {
-  return (platform === 'kimi' || platform === 'zhipu' || platform === 'minimax') && accountMode === 'coding'
+  // opencode 的 Go 订阅经 /zen/go/v1/usage 暴露 5h/weekly 窗口；Zen 按量的余额
+  // 没有可读 API，所以只有 coding 模式显示额度单元格。
+  return (
+    (platform === 'kimi' || platform === 'zhipu' || platform === 'minimax' || platform === 'opencode') &&
+    accountMode === 'coding'
+  )
 }
 
 export function cnBalanceCellVisible(platform: string, accountMode: string): boolean {

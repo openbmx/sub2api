@@ -44,10 +44,12 @@ const (
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformGrok        = domain.PlatformGrok
 	// 国产 OpenAI 兼容供应商（与 grok 一样经 OpenAI 网关转发）。
-	PlatformKimi      = domain.PlatformKimi
-	PlatformZhipu     = domain.PlatformZhipu
-	PlatformDeepseek  = domain.PlatformDeepseek
-	PlatformMiniMax   = domain.PlatformMiniMax
+	PlatformKimi     = domain.PlatformKimi
+	PlatformZhipu    = domain.PlatformZhipu
+	PlatformDeepseek = domain.PlatformDeepseek
+	PlatformMiniMax  = domain.PlatformMiniMax
+	// OpenCode 同样经 OpenAI 网关转发，但不是国产供应商。
+	PlatformOpenCode  = domain.PlatformOpenCode
 	PlatformComposite = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
@@ -78,6 +80,10 @@ const (
 	DefaultDeepseekBaseURL    = "https://api.deepseek.com"
 	// MiniMax 按量付费与 Coding/Token Plan 共用推理域名，靠 API Key 区分套餐。
 	DefaultMiniMaxBaseURL = "https://api.minimaxi.com/v1"
+	// OpenCode 的订阅（Go）与按量（Zen）走不同路径前缀，Responses 与 Chat
+	// Completions 共用同一个 base。见 https://opencode.ai/docs/go/
+	DefaultOpenCodeGoBaseURL  = "https://opencode.ai/zen/go/v1"
+	DefaultOpenCodeZenBaseURL = "https://opencode.ai/zen/v1"
 )
 
 // 国产供应商 Anthropic 协议端点的默认 base_url（上游路径为 {base}/v1/messages）。
@@ -88,12 +94,26 @@ const (
 	DefaultZhipuAnthropicBaseURL      = "https://open.bigmodel.cn/api/anthropic"
 	DefaultDeepseekAnthropicBaseURL   = "https://api.deepseek.com/anthropic"
 	DefaultMiniMaxAnthropicBaseURL    = "https://api.minimaxi.com/anthropic"
+	// OpenCode 的 Anthropic 端点是 {前缀}/v1/messages，与 Chat Completions 同在
+	// /v1 下。由于本组常量会被追加 "/v1/messages"，这里必须停在版本段之前，
+	// 否则会拼成 .../v1/v1/messages。
+	DefaultOpenCodeGoAnthropicBaseURL  = "https://opencode.ai/zen/go"
+	DefaultOpenCodeZenAnthropicBaseURL = "https://opencode.ai/zen"
 )
 
-// IsCNProvider 报告 platform 是否为国产 OpenAI 兼容供应商（kimi/zhipu/deepseek/minimax）。
+// IsCNProvider 报告 platform 是否属于「多协议 OpenAI 兼容上游」家族：
+// 国产四家（kimi/zhipu/deepseek/minimax）加 opencode。
+//
+// 名字保留历史叫法（该谓词有约 30 处调用点，重命名会在每次上游合并时全线冲突），
+// 但语义自始至终是结构性的而非地域性的——「经 OpenAI 网关转发、支持
+// account_mode × api_protocol × 分协议 base_url 的上游」。opencode 完全符合，
+// 因此直接入列而不是另起一套平行抽象。
+//
+// 真正带地域语义的是额度与余额查询（各供应商专有端点），那两处用的是显式平台
+// 白名单而不是本谓词，所以 opencode 与 deepseek 一样天然被排除在外。
 func IsCNProvider(platform string) bool {
 	switch platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax:
+	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCode:
 		return true
 	default:
 		return false
@@ -113,11 +133,14 @@ var AllowedQuotaPlatforms = []string{
 	PlatformZhipu,
 	PlatformDeepseek,
 	PlatformMiniMax,
+	PlatformOpenCode,
 }
 
 // AllowedSchedulingThresholdPlatforms 是允许设置账号自动停调阈值的平台列表。
 // openai/anthropic/grok 有原生用量窗口；kimi/zhipu/minimax 的 Coding Plan 同样暴露
-// 5h/weekly 滚动窗口，纳入阈值评估。deepseek 为余额型，走余额检测而非阈值。
+// 5h/weekly 滚动窗口，纳入阈值评估。opencode 的 Go 订阅经 /zen/go/v1/usage 暴露
+// 同型窗口，也纳入（Zen 按量无可读端点，由 GetCodingPlanProvider 挡在外面）。
+// deepseek 为余额型，走余额检测而非阈值。
 var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformOpenAI,
 	PlatformAnthropic,
@@ -125,6 +148,7 @@ var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformKimi,
 	PlatformZhipu,
 	PlatformMiniMax,
+	PlatformOpenCode,
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。

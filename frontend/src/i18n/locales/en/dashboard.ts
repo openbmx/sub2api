@@ -473,7 +473,8 @@ export default {
       kimi: 'Kimi',
       zhipu: 'Zhipu GLM',
       deepseek: 'DeepSeek',
-      minimax: 'MiniMax'
+      minimax: 'MiniMax',
+      opencode: 'OpenCode'
     },
     // Check modes (how a monitor performs its checks)
     checkMode: {

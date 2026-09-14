@@ -2054,6 +2054,9 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
+	// 与真实转发同款会话头：OpenCode 缺它一律 400 MissingSessionID，测试若不带，
+	// 报出来的错与凭据无关，会把运维引向错误的方向。
+	applyOpenCodeSessionHeader(c, account, apiURL, req.Header, payloadBytes)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

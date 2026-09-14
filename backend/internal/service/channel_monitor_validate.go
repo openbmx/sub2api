@@ -219,14 +219,18 @@ func normalizeMonitorPrimaryModel(provider, checkMode, model string) string {
 //   - gemini/grok/antigravity：本地统计/值通道降级，不会永久 error，放行
 func monitorAccountQuotaCapability(account *Account) error {
 	switch account.Platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax:
+	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCode:
 		if account.IsCodingPlan() {
-			if p := account.GetCodingPlanProvider(); p != PlatformKimi && p != PlatformZhipu && p != PlatformMiniMax {
+			if p := account.GetCodingPlanProvider(); p != PlatformKimi && p != PlatformZhipu &&
+				p != PlatformMiniMax && p != PlatformOpenCode {
 				return ErrChannelMonitorAccountNotSupportable
 			}
 			return nil
 		}
-		if account.Platform == PlatformZhipu || account.Platform == PlatformMiniMax {
+		// payg：只有 kimi/deepseek 有公开余额端点。opencode 的 Zen 余额没有
+		// Key 可读的 API（仅浏览器会话可取），与 zhipu/minimax 同样拒绝。
+		if account.Platform == PlatformZhipu || account.Platform == PlatformMiniMax ||
+			account.Platform == PlatformOpenCode {
 			return ErrChannelMonitorAccountNotSupportable
 		}
 		return nil

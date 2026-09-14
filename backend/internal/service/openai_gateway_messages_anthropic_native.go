@@ -199,6 +199,12 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	// OpenCode 的 Anthropic 端点同样强制要求会话头，缺失一律 400 MissingSessionID。
+	// 这里是 /v1/messages、CC→Anthropic、Responses→Anthropic 三条转发路径共用的
+	// 构造器，所以必须在此挂载——OpenCode 把 MiniMax M3 与 Qwen3.x 系列都路由到
+	// Anthropic 端点，漏了这一处等于这些模型全部不可用。
+	// 放在账号级覆写之后，与 OpenAI 侧保持同一优先级：真实会话身份高于固定覆写。
+	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, body)
 
 	return req, body, nil
 }

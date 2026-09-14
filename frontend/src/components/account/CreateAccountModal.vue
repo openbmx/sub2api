@@ -215,6 +215,19 @@
             <PlatformIcon platform="minimax" size="sm" />
             MiniMax
           </button>
+          <button
+            type="button"
+            @click="selectCNPlatform('opencode')"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'opencode'
+                ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="opencode" size="sm" />
+            OpenCode
+          </button>
         </div>
       </div>
 
@@ -3986,6 +3999,8 @@ const apiKeyValuePlaceholder = computed(() => {
       return 'sk-...'
     case 'minimax':
       return 'sk-...'
+    case 'opencode':
+      return 'sk-...'
     default:
       return 'sk-ant-...'
   }
@@ -4131,6 +4146,8 @@ const cnAccentActiveClass = computed(() => {
       return 'border-teal-500 bg-teal-50 dark:bg-teal-900/20'
     case 'minimax':
       return 'border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+    case 'opencode':
+      return 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
     default:
       return 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
   }
@@ -4145,6 +4162,8 @@ const cnAccentIconClass = computed(() => {
       return 'bg-teal-500 text-white'
     case 'minimax':
       return 'bg-rose-500 text-white'
+    case 'opencode':
+      return 'bg-amber-500 text-white'
     default:
       return 'bg-primary-500 text-white'
   }
@@ -4158,6 +4177,13 @@ function selectCNPlatform(platform: CnProviderPlatform) {
   apiProtocol.value = 'adaptive'
   if (platform === 'deepseek') {
     accountMode.value = 'payg'
+  }
+  // OpenCode's endpoints differ by mode (/zen/go vs /zen), and the mode carries
+  // over from whichever platform was selected before. Pin it to the Go
+  // subscription, which is the product the API key is issued against; picking
+  // "按量付费" then switches every endpoint to the Zen prefix.
+  if (platform === 'opencode') {
+    accountMode.value = 'coding'
   }
   apiKeyBaseUrl.value = defaultCNBaseUrl(platform, accountMode.value, apiProtocol.value)
   resetAdaptiveBaseUrls(platform, accountMode.value)

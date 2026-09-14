@@ -2048,6 +2048,7 @@ func setDefaults() {
 		"open.bigmodel.cn",
 		"api.minimaxi.com", // MiniMax CN quota + inference
 		"api.minimax.io",   // MiniMax intl; frozen allowlists must add this host to use the intl site
+		"opencode.ai",      // OpenCode Go subscription + Zen pay-as-you-go; one host serves both
 		"generativelanguage.googleapis.com",
 		"cloudcode-pa.googleapis.com",
 		"*.openai.azure.com",
