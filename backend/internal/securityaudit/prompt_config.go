@@ -144,6 +144,11 @@ type StorageEndpoint struct {
 	// Empty in configs saved before custom prompts existed; normalization
 	// backfills ResponseFormatQwen3Guard so their behavior is unchanged.
 	ResponseFormat string `json:"response_format"`
+	// Headers are operator-supplied request headers sent with every call to this
+	// node, for upstreams that need something beyond a bearer token. Absent in
+	// configs saved before the field existed, which decodes as nil and sends
+	// nothing extra.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 type storageConfig struct {
@@ -201,6 +206,9 @@ type ActiveEndpoint struct {
 	CustomPrompt   string
 	BlockThreshold float64
 	FlagThreshold  float64
+	// Headers carries the node's operator-supplied request headers to the
+	// scanner and probe paths.
+	Headers map[string]string
 	// TokenInvalid marks an endpoint whose persisted token ciphertext cannot be
 	// decrypted with the current encryption key (key changed or auto-generated
 	// on restart). The endpoint is kept visible for admins but excluded from
@@ -247,6 +255,10 @@ type PublicEndpoint struct {
 	HasToken       bool   `json:"has_token"`
 	TokenStatus    string `json:"token_status"`
 	ResponseFormat string `json:"response_format"`
+	// Headers round-trips to the admin UI in cleartext. Credentials belong in
+	// Token, which is encrypted at rest and never returned; this field is for
+	// routing and protocol headers the operator needs to see to edit them.
+	Headers map[string]string `json:"headers"`
 }
 
 type PublicConfig struct {
@@ -295,6 +307,10 @@ type UpdateEndpoint struct {
 	InputLimit     int    `json:"input_limit"`
 	Enabled        bool   `json:"enabled"`
 	ResponseFormat string `json:"response_format"`
+	// Headers: omitted (nil) keeps whatever is stored, so an admin client that
+	// predates the field cannot wipe them on an unrelated save. An empty object
+	// is the explicit "remove them all".
+	Headers map[string]string `json:"headers"`
 }
 
 type UpdateConfigRequest struct {
@@ -418,6 +434,7 @@ func normalizeStorageConfig(cfg *storageConfig) {
 		if ep.ResponseFormat == "" {
 			ep.ResponseFormat = ResponseFormatQwen3Guard
 		}
+		ep.Headers = sanitizeCustomHeaders(ep.Headers)
 	}
 }
 
@@ -568,6 +585,11 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 		if strings.TrimSpace(endpoint.ResponseFormat) != "" && !isKnownResponseFormat(endpoint.ResponseFormat) {
 			return infraerrors.BadRequest(ErrorCodeInvalidResponseFormat, "审计节点响应契约无效")
 		}
+		// Reject a bad header here, where an administrator is present to read the
+		// message, rather than letting the load path silently drop it later.
+		if _, err := normalizeCustomHeaders(endpoint.Headers); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -689,7 +711,7 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 			ID: ep.ID, Name: ep.Name, Protocol: ep.Protocol, BaseURL: ep.BaseURL,
 			Model: ep.Model, TimeoutMS: ep.TimeoutMS, InputLimit: ep.InputLimit,
 			Enabled: ep.Enabled, HasToken: hasToken, TokenStatus: status,
-			ResponseFormat: ep.ResponseFormat,
+			ResponseFormat: ep.ResponseFormat, Headers: cloneCustomHeaders(ep.Headers),
 		})
 	}
 	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled}
@@ -762,6 +784,7 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 			// a pure (endpoint, chunk) function across failover and probe paths.
 			ResponseFormat: responseFormat, CustomPrompt: cfg.CustomPrompt,
 			BlockThreshold: cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
+			Headers: cloneCustomHeaders(ep.Headers),
 		})
 	}
 	return active, nil

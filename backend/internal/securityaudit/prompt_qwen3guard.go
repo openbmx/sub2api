@@ -239,9 +239,7 @@ func (s *OpenAICompatibleScanner) scan(ctx context.Context, endpoint ActiveEndpo
 		return "", nil, &GuardError{Code: ErrorCodeUnavailable, Cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if endpoint.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+endpoint.Token)
-	}
+	applyEndpointHeaders(req.Header, endpoint)
 	resp, err := client.Do(req)
 	if err != nil {
 		timeout := errors.Is(err, context.DeadlineExceeded)

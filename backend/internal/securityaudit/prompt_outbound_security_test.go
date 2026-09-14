@@ -37,6 +37,31 @@ func TestNormalizeBaseURLAllowsAdministratorConfiguredDestinations(t *testing.T)
 	require.Equal(t, "https://guard.example.com/v1/chat/completions", url)
 }
 
+// Upstreams that serve the OpenAI contract under a path prefix are the common
+// case, not the exception. Appending /v1 to a base URL that already ends in it
+// produced /api/v1/v1/chat/completions and a 404 the operator could not see.
+func TestBaseURLVersionSegmentIsNotAppendedTwice(t *testing.T) {
+	tests := []struct{ base, chat, models string }{
+		{"https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/chat/completions", "https://openrouter.ai/api/v1/models"},
+		{"https://opencode.ai/zen/v1", "https://opencode.ai/zen/v1/chat/completions", "https://opencode.ai/zen/v1/models"},
+		{"https://dashscope.aliyuncs.com/compatible-mode/v1/", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "https://dashscope.aliyuncs.com/compatible-mode/v1/models"},
+		{"https://guard.example.com/V1", "https://guard.example.com/v1/chat/completions", "https://guard.example.com/v1/models"},
+		// Unchanged shapes: no path, bare /v1, and a prefix that merely ends in
+		// the letters v1 without being its own segment.
+		{"https://guard.example.com", "https://guard.example.com/v1/chat/completions", "https://guard.example.com/v1/models"},
+		{"https://guard.example.com/v1", "https://guard.example.com/v1/chat/completions", "https://guard.example.com/v1/models"},
+		{"https://guard.example.com/apiv1", "https://guard.example.com/apiv1/v1/chat/completions", "https://guard.example.com/apiv1/v1/models"},
+	}
+	for _, tt := range tests {
+		chat, err := ChatCompletionsURL(tt.base)
+		require.NoError(t, err, tt.base)
+		require.Equal(t, tt.chat, chat, tt.base)
+		models, err := ModelsURL(tt.base)
+		require.NoError(t, err, tt.base)
+		require.Equal(t, tt.models, models, tt.base)
+	}
+}
+
 func TestHTTPClientUsesDirectStandardDialer(t *testing.T) {
 	client, err := NewSecureHTTPClient(ActiveEndpoint{BaseURL: "https://guard.example.com", TimeoutMS: 1000})
 	require.NoError(t, err)

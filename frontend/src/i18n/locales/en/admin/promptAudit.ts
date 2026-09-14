@@ -52,6 +52,8 @@ export default {
       name: 'Node name', id: 'Stable node ID', baseUrl: 'Base URL', apiKey: 'API Key', keepSecret: 'Leave blank to keep the saved API Key', reenterSecret: 'The saved API Key cannot be decrypted (encryption key changed); enter a new one',
       secretHint: 'Plaintext exists only in this editor and is cleared immediately after a successful save.', clearSecret: 'Explicitly clear the saved API Key', timeout: 'Total timeout (ms)', inputLimit: 'Unicode characters per chunk',
       toggleNode: 'Toggle node {name}', deleteConfirm: 'Remove “{name}” from the draft? It takes effect after saving.',
+      headers: 'Custom request headers', addHeader: 'Add header', headerName: 'Name', headerValue: 'Value', removeHeader: 'Remove header {name}',
+      headersHint: 'Sent with every call to this node, for upstreams that need extra routing or protocol headers. Values are stored and shown in cleartext — put API keys in the field above. Host, Content-Type and friends are managed by the system and cannot be overridden. OpenCode nodes get X-Opencode-Session filled in automatically; setting it here overrides that.',
       responseFormat: 'Response contract',
       responseFormats: { qwen3guard: 'Qwen3Guard', custom_json: 'Custom prompt' },
       responseFormatHints: {

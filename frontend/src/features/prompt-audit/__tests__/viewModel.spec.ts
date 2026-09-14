@@ -58,6 +58,33 @@ describe('Prompt Audit view model', () => {
     expect(buildUpdateRequest(draft).endpoints[0]).toMatchObject({ token: undefined, clear_token: true })
   })
 
+  it('round-trips custom request headers and treats an emptied field as a removal', () => {
+    const withHeaders = config()
+    withHeaders.endpoints[0].headers = { 'X-Opencode-Session': 'fixed', 'X-Tenant': '  t1  ' }
+    const draft = configToDraft(withHeaders)
+    expect(draft.endpoints[0].headers).toEqual({ 'X-Opencode-Session': 'fixed', 'X-Tenant': '  t1  ' })
+    expect(buildUpdateRequest(draft).endpoints[0].headers).toEqual({ 'X-Opencode-Session': 'fixed', 'X-Tenant': 't1' })
+
+    // The form is authoritative for the node, so clearing the last header must
+    // send an empty object rather than omitting the field, which the server
+    // reads as "keep what is stored".
+    draft.endpoints[0].headers = {}
+    expect(buildUpdateRequest(draft).endpoints[0].headers).toEqual({})
+  })
+
+  it('defaults headers to an empty map for configs saved before the field existed', () => {
+    const draft = configToDraft(config())
+    expect(draft.endpoints[0].headers).toEqual({})
+    expect(buildUpdateRequest(draft).endpoints[0].headers).toEqual({})
+  })
+
+  it('treats a header change as dirty so it cannot be saved away silently', () => {
+    const original = configToDraft(config())
+    const changed = configToDraft(config())
+    changed.endpoints[0].headers = { 'X-Tenant': 't1' }
+    expect(draftFingerprint(changed)).not.toBe(draftFingerprint(original))
+  })
+
   it('includes the optional narrow blocking scope in the update payload', () => {
     const draft = configToDraft(config())
     draft.blocking_latest_turn_only = true

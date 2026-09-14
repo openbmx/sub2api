@@ -41,6 +41,7 @@ export function configToDraft(config: PromptAuditConfig): PromptAuditDraft {
       ...endpoint,
       token: '',
       clear_token: false,
+      headers: { ...(endpoint.headers ?? {}) },
     })),
   }
 }
@@ -60,6 +61,7 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
     token: '',
     clear_token: false,
     response_format: 'qwen3guard',
+    headers: {},
   }
 }
 
@@ -106,8 +108,21 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
       input_limit: Number(endpoint.input_limit),
       enabled: endpoint.enabled,
       response_format: endpoint.response_format ?? 'qwen3guard',
+      // Always sent, never omitted: this form is authoritative for the node, so
+      // clearing the last header here must actually clear it on the server.
+      headers: normalizeHeaderMap(endpoint.headers),
     })),
   }
+}
+
+/** Drops blank rows and trims both sides, so an emptied form field is a removal. */
+export function normalizeHeaderMap(headers: Record<string, string> | null | undefined): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    const key = name.trim()
+    if (key) result[key] = (value ?? '').trim()
+  }
+  return result
 }
 
 export function draftFingerprint(draft: PromptAuditDraft | null): string {

@@ -15,11 +15,19 @@ export interface PromptAuditEndpoint {
   has_token: boolean
   token_status: 'configured' | 'missing' | 'invalid' | string
   response_format: PromptResponseFormat
+  /**
+   * Extra request headers sent with every call to this node, for upstreams that
+   * need more than a bearer token. Null on configs saved before the field
+   * existed. Credentials belong in the token field, which is encrypted at rest;
+   * these round-trip in cleartext so they can be edited.
+   */
+  headers?: Record<string, string> | null
 }
 
 export interface PromptAuditEndpointDraft extends PromptAuditEndpoint {
   token: string
   clear_token: boolean
+  headers: Record<string, string>
 }
 
 export interface PromptAuditConfig {
@@ -93,6 +101,7 @@ export interface PromptAuditUpdateRequest {
     input_limit: number
     enabled: boolean
     response_format: PromptResponseFormat
+    headers: Record<string, string>
   }>
 }
 

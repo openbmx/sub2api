@@ -146,6 +146,22 @@
           <span>{{ t('admin.promptAudit.pool.inputLimit') }}</span>
           <input v-model.number="editing.input_limit" class="input w-full" type="number" min="128" max="1000000" required :aria-label="t('admin.promptAudit.pool.inputLimit')" />
         </label>
+        <div class="space-y-2 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
+          <div class="flex items-center justify-between gap-3">
+            <span>{{ t('admin.promptAudit.pool.headers') }}</span>
+            <button type="button" class="btn btn-secondary" data-test="add-header" :disabled="headerRows.length >= MAX_CUSTOM_HEADERS" @click="addHeaderRow">
+              {{ t('admin.promptAudit.pool.addHeader') }}
+            </button>
+          </div>
+          <div v-for="(row, index) in headerRows" :key="index" class="flex items-center gap-2">
+            <input v-model="row.name" class="input flex-1" :placeholder="t('admin.promptAudit.pool.headerName')" :aria-label="t('admin.promptAudit.pool.headerName')" />
+            <input v-model="row.value" class="input flex-1" :placeholder="t('admin.promptAudit.pool.headerValue')" :aria-label="t('admin.promptAudit.pool.headerValue')" />
+            <button type="button" class="btn btn-secondary" :aria-label="t('admin.promptAudit.pool.removeHeader', { name: row.name })" @click="removeHeaderRow(index)">
+              {{ t('common.delete') }}
+            </button>
+          </div>
+          <span class="block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.pool.headersHint') }}</span>
+        </div>
       </form>
       <template #footer>
         <div class="flex justify-end gap-3">
@@ -176,23 +192,47 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const editing = ref<PromptAuditEndpointDraft | null>(null)
 const editingIndex = ref(-1)
+// Mirrors the backend's MaxCustomHeaders so the form stops before a save fails.
+const MAX_CUSTOM_HEADERS = 16
+// A record has no stable order and cannot hold a half-typed key, so the dialog
+// edits rows and folds them back into the draft on save.
+const headerRows = ref<Array<{ name: string; value: string }>>([])
 
 function openCreate() {
   editingIndex.value = -1
   editing.value = createDefaultEndpoint(props.endpoints.length + 1)
+  headerRows.value = []
 }
 function openEdit(endpoint: PromptAuditEndpointDraft) {
   editingIndex.value = props.endpoints.findIndex((item) => item.id === endpoint.id)
   editing.value = cloneData(endpoint)
+  headerRows.value = Object.entries(endpoint.headers ?? {}).map(([name, value]) => ({ name, value }))
 }
 function closeEditor() {
   editing.value = null
   editingIndex.value = -1
+  headerRows.value = []
+}
+function addHeaderRow() {
+  if (headerRows.value.length >= MAX_CUSTOM_HEADERS) return
+  headerRows.value.push({ name: '', value: '' })
+}
+function removeHeaderRow(index: number) {
+  headerRows.value.splice(index, 1)
+}
+function collectHeaders(): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const row of headerRows.value) {
+    const name = row.name.trim()
+    if (name) result[name] = row.value.trim()
+  }
+  return result
 }
 function saveEditor() {
   if (!editing.value?.id.trim() || !editing.value.name.trim() || !editing.value.base_url.trim()) return
   const next = props.endpoints.map((item) => cloneData(item))
   const value = cloneData(editing.value)
+  value.headers = collectHeaders()
   if (value.token.trim()) value.clear_token = false
   if (editingIndex.value < 0) next.push(value)
   else next.splice(editingIndex.value, 1, value)

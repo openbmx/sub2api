@@ -14,7 +14,7 @@ import type {
   PromptPreviewRequest,
   PromptPreviewResult,
 } from './types'
-import { eventFilterPayload, eventQueryParams } from './viewModel'
+import { eventFilterPayload, eventQueryParams, normalizeHeaderMap } from './viewModel'
 
 const basePath = '/admin/prompt-audit'
 
@@ -41,6 +41,7 @@ export async function probeEndpoint(endpoint: PromptAuditEndpointDraft): Promise
       input_limit: endpoint.input_limit,
       enabled: endpoint.enabled,
       response_format: endpoint.response_format,
+      headers: normalizeHeaderMap(endpoint.headers),
     },
   })
   return data

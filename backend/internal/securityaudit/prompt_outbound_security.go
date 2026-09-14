@@ -31,8 +31,15 @@ func NormalizeBaseURL(raw string) (string, error) {
 		return "", infraerrors.BadRequest("prompt_audit_invalid_base_url", "审计节点地址无效")
 	}
 	path := strings.TrimRight(parsed.EscapedPath(), "/")
-	if strings.EqualFold(path, "/v1") {
-		path = ""
+	// Accept an OpenAI-style base URL with or without its version segment, since
+	// ChatCompletionsURL and ModelsURL append their own. The segment used to be
+	// dropped only when it was the entire path, so every upstream that lives
+	// under a prefix got it appended twice and 404'd on a URL the operator had
+	// no way to see: https://openrouter.ai/api/v1, https://opencode.ai/zen/v1,
+	// https://dashscope.aliyuncs.com/compatible-mode/v1. Requiring the leading
+	// slash keeps a path like /apiv1 intact.
+	if strings.HasSuffix(strings.ToLower(path), "/v1") {
+		path = path[:len(path)-len("/v1")]
 	}
 	parsed.Path = path
 	parsed.RawPath = ""

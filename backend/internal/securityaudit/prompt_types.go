@@ -35,6 +35,8 @@ const (
 	ErrorCodeInvalidThreshold      = "prompt_audit_invalid_threshold"
 	ErrorCodeCustomPromptTooLong   = "prompt_audit_custom_prompt_too_long"
 	ErrorCodeEndpointNotFound      = "prompt_audit_endpoint_not_found"
+	ErrorCodeInvalidHeader         = "prompt_audit_invalid_header"
+	ErrorCodeTooManyHeaders        = "prompt_audit_too_many_headers"
 
 	DefaultGuardModel = "sileader/qwen3guard:0.6b"
 )

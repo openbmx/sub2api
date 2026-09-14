@@ -52,6 +52,8 @@ export default {
       name: '节点名称', id: '稳定节点 ID', baseUrl: 'Base URL', apiKey: 'API Key', keepSecret: '留空以保留已保存的 API Key', reenterSecret: '已保存的 API Key 无法解密（加密密钥已变更），请重新输入',
       secretHint: '明文只在本次编辑内存中存在；保存成功后会立即清除。', clearSecret: '显式清除已保存的 API Key', timeout: '总超时（毫秒）', inputLimit: '单片 Unicode 字符上限',
       toggleNode: '切换节点 {name}', deleteConfirm: '从草稿中删除节点“{name}”？保存配置后生效。',
+      headers: '自定义请求头', addHeader: '添加请求头', headerName: '名称', headerValue: '值', removeHeader: '删除请求头 {name}',
+      headersHint: '随每次调用该节点发送，用于需要额外路由或协议头的上游。值以明文保存并回显，API Key 请填上面的字段。Host、Content-Type 等由系统管理，不可覆盖。OpenCode 节点会自动补 X-Opencode-Session，在此填写同名头可覆盖。',
       responseFormat: '响应契约',
       responseFormats: { qwen3guard: 'Qwen3Guard', custom_json: '自定义提示词' },
       responseFormatHints: {

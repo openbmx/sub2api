@@ -22,7 +22,7 @@ const endpoint = (): PromptAuditEndpointDraft => ({
   id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
   model: 'guard-model', timeout_ms: 3000, input_limit: 4000, enabled: true,
   has_token: true, token_status: 'configured', token: '', clear_token: false,
-  response_format: 'qwen3guard',
+  response_format: 'qwen3guard', headers: {},
 })
 
 const DEFAULT_PROMPT = '[SYSTEM — IMMUTABLE] default template'
@@ -53,6 +53,43 @@ describe('Prompt Audit components', () => {
     const probe = wrapper.findAll('button').find((button) => button.text().includes('admin.promptAudit.pool.probe'))
     await probe!.trigger('click')
     expect(wrapper.emitted('probe')?.[0]?.[0]).toMatchObject({ id: 'guard-1' })
+  })
+
+  it('edits custom request headers as rows and folds blank ones out on save', async () => {
+    const withHeader = { ...endpoint(), headers: { 'X-Tenant': 't1' } }
+    const wrapper = mount(EndpointPool, {
+      props: { endpoints: [withHeader], probeResults: {}, probingIds: [] },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    await wrapper.findAll('button').find((button) => button.text().includes('common.edit'))!.trigger('click')
+
+    const names = () => wrapper.findAll<HTMLInputElement>('[aria-label="admin.promptAudit.pool.headerName"]')
+    expect(names()).toHaveLength(1)
+    expect(names()[0].element.value).toBe('X-Tenant')
+
+    await wrapper.get('[data-test="add-header"]').trigger('click')
+    await names()[1].setValue('X-Opencode-Session')
+    await wrapper.findAll<HTMLInputElement>('[aria-label="admin.promptAudit.pool.headerValue"]')[1].setValue('fixed')
+    // A third row left untouched is what a mis-click leaves behind; it must not
+    // become an empty-named header in the payload.
+    await wrapper.get('[data-test="add-header"]').trigger('click')
+
+    await wrapper.get('[data-test="save-endpoint"]').trigger('click')
+    const updated = wrapper.emitted('update:endpoints')?.at(-1)?.[0] as PromptAuditEndpointDraft[]
+    expect(updated[0].headers).toEqual({ 'X-Tenant': 't1', 'X-Opencode-Session': 'fixed' })
+  })
+
+  it('removes a custom header row so the node can go back to sending none', async () => {
+    const withHeader = { ...endpoint(), headers: { 'X-Tenant': 't1' } }
+    const wrapper = mount(EndpointPool, {
+      props: { endpoints: [withHeader], probeResults: {}, probingIds: [] },
+      global: { stubs: { BaseDialog: DialogStub } },
+    })
+    await wrapper.findAll('button').find((button) => button.text().includes('common.edit'))!.trigger('click')
+    await wrapper.get('[aria-label="admin.promptAudit.pool.removeHeader"]').trigger('click')
+    await wrapper.get('[data-test="save-endpoint"]').trigger('click')
+    const updated = wrapper.emitted('update:endpoints')?.at(-1)?.[0] as PromptAuditEndpointDraft[]
+    expect(updated[0].headers).toEqual({})
   })
 
   it('surfaces an undecryptable saved credential and prompts for re-entry', async () => {

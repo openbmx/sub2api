@@ -254,9 +254,7 @@ func (s *PromptService) Probe(ctx context.Context, request ProbeRequest) ProbeRe
 	if err != nil {
 		return s.finishProbe(endpoint.ID, started, ProbeResult{Status: "failed", ErrorCode: "probe_request_invalid", Message: "无法创建探测请求", TokenApplied: tokenApplied})
 	}
-	if endpoint.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+endpoint.Token)
-	}
+	applyEndpointHeaders(req.Header, endpoint)
 	resp, err := client.Do(req)
 	if err != nil {
 		code := "connection_failed"
@@ -458,6 +456,10 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 		return ActiveEndpoint{}, false, err
 	}
 	token := strings.TrimSpace(input.Token)
+	headers, err := normalizeCustomHeaders(input.Headers)
+	if err != nil {
+		return ActiveEndpoint{}, false, err
+	}
 	// The moderation policy is global, so a probe must run under the same prompt
 	// and thresholds the gateway would use; otherwise "test node" silently
 	// validates a different contract than production traffic.
@@ -472,16 +474,30 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 		if cfg.FlagThreshold > 0 {
 			flagThreshold = cfg.FlagThreshold
 		}
-		if token == "" {
+		// A probe of a saved node usually arrives with neither the credential nor
+		// the headers in the draft. Falling back to the stored ones keeps "test
+		// node" exercising the request production would actually send.
+		if token == "" || headers == nil {
 			for _, endpoint := range cfg.Endpoints {
 				if endpoint.ID != strings.TrimSpace(input.ID) {
 					continue
 				}
-				// Reuse a stored credential only when the probe targets the same
+				// Reuse stored values only when the probe targets the same
 				// normalized base URL. Otherwise an admin probe could exfiltrate
 				// the Guard token to an attacker-controlled HTTPS host.
-				if endpoint.BaseURL == baseURL {
-					token = endpoint.Token
+				//
+				// The stored value is re-normalized rather than compared raw: it
+				// was normalized by whichever rule was current when it was saved,
+				// so comparing it directly makes every future normalization change
+				// silently stop reusing credentials until each node is re-saved.
+				storedBaseURL, storedErr := NormalizeBaseURL(endpoint.BaseURL)
+				if storedErr == nil && storedBaseURL == baseURL {
+					if token == "" {
+						token = endpoint.Token
+					}
+					if headers == nil {
+						headers = cloneCustomHeaders(endpoint.Headers)
+					}
 				}
 				break
 			}
@@ -505,7 +521,7 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 	}
 	storage := storageConfig{Enabled: false, Strategy: "priority", WorkerCount: DefaultWorkerCount, QueueCapacity: DefaultQueueCapacity, Scanners: append([]string(nil), AllScannerIDs...), AllGroups: true,
 		CustomPrompt: customPrompt, BlockThreshold: blockThreshold, FlagThreshold: flagThreshold,
-		Endpoints: []StorageEndpoint{{ID: strings.TrimSpace(input.ID), Name: strings.TrimSpace(input.Name), Protocol: "openai_compatible", BaseURL: baseURL, Model: model, TimeoutMS: timeout, InputLimit: limit, ResponseFormat: responseFormat}}}
+		Endpoints: []StorageEndpoint{{ID: strings.TrimSpace(input.ID), Name: strings.TrimSpace(input.Name), Protocol: "openai_compatible", BaseURL: baseURL, Model: model, TimeoutMS: timeout, InputLimit: limit, ResponseFormat: responseFormat, Headers: headers}}}
 	if storage.Endpoints[0].ID == "" {
 		storage.Endpoints[0].ID = "probe"
 	}
@@ -518,7 +534,8 @@ func (s *PromptService) resolveProbeEndpoint(input UpdateEndpoint) (ActiveEndpoi
 	return ActiveEndpoint{ID: storage.Endpoints[0].ID, Name: storage.Endpoints[0].Name, Protocol: "openai_compatible",
 		BaseURL: baseURL, Model: model, Token: token, TimeoutMS: timeout, InputLimit: limit, Enabled: true,
 		ResponseFormat: responseFormat, CustomPrompt: customPrompt,
-		BlockThreshold: blockThreshold, FlagThreshold: flagThreshold}, token != "", nil
+		BlockThreshold: blockThreshold, FlagThreshold: flagThreshold,
+		Headers: headers}, token != "", nil
 }
 
 func (s *PromptService) finishProbe(id string, started time.Time, result ProbeResult) ProbeResult {

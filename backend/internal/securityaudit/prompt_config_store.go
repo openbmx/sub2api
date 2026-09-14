@@ -425,17 +425,26 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		if err != nil {
 			return storageConfig{}, err
 		}
+		headers, err := normalizeCustomHeaders(endpoint.Headers)
+		if err != nil {
+			return storageConfig{}, err
+		}
 		stored := StorageEndpoint{
 			ID: strings.TrimSpace(endpoint.ID), Name: strings.TrimSpace(endpoint.Name),
 			Protocol: strings.TrimSpace(endpoint.Protocol), BaseURL: baseURL, Model: strings.TrimSpace(endpoint.Model),
 			TimeoutMS: endpoint.TimeoutMS, InputLimit: endpoint.InputLimit, Enabled: endpoint.Enabled,
-			ResponseFormat: strings.TrimSpace(endpoint.ResponseFormat),
+			ResponseFormat: strings.TrimSpace(endpoint.ResponseFormat), Headers: headers,
 		}
 		old, hadOld := currentByID[stored.ID]
 		// Same reasoning as the policy fields above: an omitted response_format
 		// must not silently downgrade an existing custom_json node.
 		if stored.ResponseFormat == "" && hadOld {
 			stored.ResponseFormat = old.ResponseFormat
+		}
+		// nil means the client never sent the field; an empty map is an explicit
+		// "remove them all". Only the former inherits.
+		if stored.Headers == nil && hadOld {
+			stored.Headers = cloneCustomHeaders(old.Headers)
 		}
 		switch {
 		case endpoint.ClearToken:
@@ -598,5 +607,11 @@ func cloneActiveConfig(cfg ActiveConfig) ActiveConfig {
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	cfg.Endpoints = append([]ActiveEndpoint(nil), cfg.Endpoints...)
+	// Copying the slice leaves every clone sharing one Headers map per endpoint,
+	// the same aliasing the Scanners and GroupIDs copies above exist to prevent.
+	// Nil returns nil, so a deployment with no custom headers allocates nothing.
+	for i := range cfg.Endpoints {
+		cfg.Endpoints[i].Headers = cloneCustomHeaders(cfg.Endpoints[i].Headers)
+	}
 	return cfg
 }
