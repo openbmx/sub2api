@@ -35,6 +35,8 @@ const (
 	cnExtraSuffix5hReset      = "5h_reset_at"
 	cnExtraSuffixWeeklyUsed   = "weekly_used_percent"
 	cnExtraSuffixWeeklyReset  = "weekly_reset_at"
+	cnExtraSuffixMonthlyUsed  = "monthly_used_percent"
+	cnExtraSuffixMonthlyReset = "monthly_reset_at"
 	cnExtraSuffixUsageUpdated = "usage_updated_at"
 )
 
@@ -43,7 +45,7 @@ func cnExtraKey(provider, suffix string) string { return provider + "_" + suffix
 
 // CNQuotaTier 表示一个滚动用量窗口档位（5h / weekly）。
 type CNQuotaTier struct {
-	Window      string  `json:"window"`             // "5h" | "weekly"
+	Window      string  `json:"window"`             // "5h" | "weekly" | "monthly"
 	UsedPercent float64 `json:"used_percent"`       // 已用百分比（0-100+，不做裁剪）
 	ResetAt     string  `json:"reset_at,omitempty"` // RFC3339，空表示无重置时间
 }
@@ -129,8 +131,8 @@ func (s *CNProviderQuotaService) QueryUsageForAccount(ctx context.Context, accou
 
 func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, account *Account) (*CNProviderQuotaProbeResult, error) {
 	provider := account.GetCodingPlanProvider()
-	if provider != PlatformKimi && provider != PlatformZhipu && provider != PlatformMiniMax && provider != PlatformOpenCode {
-		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a kimi/zhipu/minimax/opencode coding plan account")
+	if provider != PlatformKimi && provider != PlatformZhipu && provider != PlatformMiniMax && provider != PlatformOpenCodeGo {
+		return nil, infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "account is not a kimi/zhipu/minimax coding plan or opencode go account")
 	}
 
 	apiKey := strings.TrimSpace(account.GetCNAPIKey())
@@ -148,6 +150,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	case PlatformKimi:
 		targetURL = kimiQuotaURL(baseURL)
 		authHeader = "Bearer " + apiKey
+	case PlatformOpenCodeGo:
+		targetURL = openCodeGoQuotaURL(baseURL)
+		authHeader = "Bearer " + apiKey
 	case PlatformZhipu:
 		targetURL = zhipuQuotaURL(baseURL)
 		authHeader = apiKey // 智谱额度端点鉴权不加 Bearer 前缀
@@ -160,9 +165,6 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 		}
 	case PlatformMiniMax:
 		targetURL = minimaxQuotaURL(baseURL)
-		authHeader = "Bearer " + apiKey
-	case PlatformOpenCode:
-		targetURL = openCodeQuotaURL()
 		authHeader = "Bearer " + apiKey
 	}
 
@@ -237,6 +239,9 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 	switch provider {
 	case PlatformKimi:
 		tiers = parseKimiUsageTiers(bodyBytes)
+	case PlatformOpenCodeGo:
+		tiers = parseOpenCodeGoUsageTiers(bodyBytes)
+		result.PlanLevel = "OpenCode Go"
 	case PlatformZhipu:
 		tiers = parseZhipuTokenTiers(gjson.GetBytes(bodyBytes, "data"))
 		result.PlanLevel = strings.TrimSpace(gjson.GetBytes(bodyBytes, "data.level").String())
@@ -251,16 +256,6 @@ func (s *CNProviderQuotaService) queryUsageForAccount(ctx context.Context, accou
 		}
 		tiers = parseMiniMaxUsageTiers(bodyBytes)
 		result.PlanLevel = strings.TrimSpace(gjson.GetBytes(bodyBytes, "current_subscribe_title").String())
-	case PlatformOpenCode:
-		tiers = parseOpenCodeUsageTiers(bodyBytes)
-		if len(tiers) == 0 {
-			// The schema is undocumented, so an unrecognized body is reported as
-			// a failure instead of being persisted as "0% used" — a fabricated
-			// zero would let threshold-based pausing wave through an account
-			// that is actually out of quota.
-			result.Error = "unrecognized usage response: " + truncate(strings.TrimSpace(string(bodyBytes)), 240)
-			return result, nil
-		}
 	}
 	result.Tiers = tiers
 	result.Success = true
@@ -291,6 +286,12 @@ func (s *CNProviderQuotaService) loadCodingPlanAccount(ctx context.Context, acco
 func validateCodingPlanAccount(account *Account) error {
 	if account == nil {
 		return infraerrors.New(http.StatusNotFound, "CN_QUOTA_ACCOUNT_NOT_FOUND", "account not found")
+	}
+	if account.IsOpenCodeGoPlan() {
+		return nil
+	}
+	if account.IsOpenCodeGo() {
+		return infraerrors.New(http.StatusBadRequest, "CN_QUOTA_NOT_CODING_PLAN", "opencode zen accounts have no subscription quota window")
 	}
 	if !account.IsCNProvider() {
 		return infraerrors.New(http.StatusBadRequest, "CN_QUOTA_INVALID_PLATFORM", "account is not a CN provider account")
@@ -340,101 +341,6 @@ func minimaxQuotaURL(baseURL string) string {
 		return "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
 	}
 	return "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
-}
-
-// openCodeQuotaURL is hardcoded rather than derived from the account base_url,
-// for the same reason the other providers' are: the API key must never be sent
-// to a relay of the operator's choosing just because they pointed base_url at
-// one. Only the Go subscription exposes this endpoint — Zen pay-as-you-go has
-// no key-readable balance at all, which is why GetCodingPlanProvider returns
-// empty for payg accounts and this is never reached for them.
-func openCodeQuotaURL() string {
-	return "https://opencode.ai/zen/go/v1/usage"
-}
-
-// parseOpenCodeUsageTiers parses GET /zen/go/v1/usage.
-//
-// Reported shape (opencode issue #44189):
-//
-//	{"usage":{"rolling":{"percent":12,"resetsAt":"..."},"weekly":{...},"monthly":{...}}}
-//
-// OpenCode has never published this schema, so it is read tolerantly: windows
-// are accepted at the root as well as under "usage", and both the percent-used
-// and percent-remaining spellings are understood. Anything unrecognized yields
-// no tiers, which the caller turns into a visible failure rather than a
-// confident zero.
-//
-// The monthly window is dropped on purpose. The tier model and its persisted
-// extra keys carry only 5h and weekly, and those are the two that actually bind
-// first: OpenCode sizes the 5-hour window at 20% of the monthly allowance and
-// the weekly at 50%, so monthly can never be the first to trip.
-func parseOpenCodeUsageTiers(body []byte) []CNQuotaTier {
-	root := gjson.GetBytes(body, "usage")
-	if !root.Exists() || !root.IsObject() {
-		root = gjson.ParseBytes(body)
-	}
-	windows := []struct{ source, window string }{
-		{"rolling", "5h"},
-		{"weekly", "weekly"},
-	}
-	var tiers []CNQuotaTier
-	for _, w := range windows {
-		node := root.Get(w.source)
-		if !node.Exists() || !node.IsObject() {
-			continue
-		}
-		used, ok := openCodeUsedPercent(node)
-		if !ok {
-			continue
-		}
-		tiers = append(tiers, CNQuotaTier{
-			Window:      w.window,
-			UsedPercent: used,
-			ResetAt:     openCodeResetAt(node),
-		})
-	}
-	return tiers
-}
-
-// openCodeUsedPercent reads the consumed share of a window, accepting either a
-// used or a remaining figure under any of the spellings seen in the wild.
-func openCodeUsedPercent(node gjson.Result) (float64, bool) {
-	for _, key := range []string{"percent", "used_percent", "usedPercent", "percentUsed"} {
-		if v := node.Get(key); v.Exists() {
-			if used, ok := cnParseF64(v.Value()); ok {
-				return clampUsedPercent(used), true
-			}
-		}
-	}
-	for _, key := range []string{"remaining_percent", "remainingPercent", "percentRemaining"} {
-		if v := node.Get(key); v.Exists() {
-			if remaining, ok := cnParseF64(v.Value()); ok {
-				return clampUsedPercent(100 - remaining), true
-			}
-		}
-	}
-	return 0, false
-}
-
-func openCodeResetAt(node gjson.Result) string {
-	for _, key := range []string{"resetsAt", "reset_at", "resetAt", "resets_at"} {
-		if v := node.Get(key); v.Exists() {
-			if reset := cnNormalizeResetTime(v.Value()); reset != "" {
-				return reset
-			}
-		}
-	}
-	return ""
-}
-
-// clampUsedPercent floors at zero only. The ceiling is deliberately left open:
-// the other providers' parsers report over-100 values as-is, and truncating
-// them would hide an account that has blown well past its window.
-func clampUsedPercent(used float64) float64 {
-	if used < 0 {
-		return 0
-	}
-	return used
 }
 
 func zhipuQuotaHost(baseURL string) string {
@@ -722,9 +628,59 @@ func cnQuotaExtraUpdates(provider string, tiers []CNQuotaTier, now time.Time) ma
 			if t.ResetAt != "" {
 				updates[cnExtraKey(provider, cnExtraSuffixWeeklyReset)] = t.ResetAt
 			}
+		case "monthly":
+			updates[cnExtraKey(provider, cnExtraSuffixMonthlyUsed)] = t.UsedPercent
+			if t.ResetAt != "" {
+				updates[cnExtraKey(provider, cnExtraSuffixMonthlyReset)] = t.ResetAt
+			}
 		}
 	}
 	return updates
+}
+
+// parseOpenCodeGoUsageTiers 解析 OpenCode Go GET /usage 响应。
+//
+// 结构对齐 cc-switch extractor：
+//
+//	{ "usage": { "rolling": {percent, resetsAt}, "weekly": {...}, "monthly": {...} } }
+//
+// percent 为已用百分比（0-100）；rolling 映射为 5h 窗口。
+func parseOpenCodeGoUsageTiers(body []byte) []CNQuotaTier {
+	usage := gjson.GetBytes(body, "usage")
+	if !usage.Exists() {
+		return nil
+	}
+	var tiers []CNQuotaTier
+	for _, item := range []struct {
+		key    string
+		window string
+	}{
+		{key: "rolling", window: "5h"},
+		{key: "weekly", window: "weekly"},
+		{key: "monthly", window: "monthly"},
+	} {
+		node := usage.Get(item.key)
+		if !node.Exists() {
+			continue
+		}
+		percentNode := node.Get("percent")
+		if !percentNode.Exists() {
+			continue
+		}
+		used, ok := cnParseF64(percentNode.Value())
+		if !ok {
+			continue
+		}
+		if used < 0 {
+			used = 0
+		}
+		tiers = append(tiers, CNQuotaTier{
+			Window:      item.window,
+			UsedPercent: used,
+			ResetAt:     cnNormalizeResetTime(node.Get("resetsAt").Value()),
+		})
+	}
+	return tiers
 }
 
 // cnParseF64 把 JSON 数值或字符串解析为 float64（兼容 "100" 与 100）。

@@ -16,7 +16,9 @@ import (
 // Adding a platform by grepping for the Go constant (PlatformMiniMax and
 // friends) structurally cannot find any of them, which is exactly how the
 // v1.1.18 OpenCode rollout shipped with six of them stale: groups and channel
-// monitors could not be created for the new platform at all.
+// monitors could not be created for the new platform at all. That rollout has
+// since been retired in favour of upstream's opencode_go, but the hazard is
+// structural and applies to every future platform, so the guard stays.
 //
 // This test reads the literals back out and checks them against the Go
 // constants, so the next platform fails here instead of in production.
@@ -29,7 +31,7 @@ func concretePlatforms() []string {
 		service.PlatformAnthropic, service.PlatformOpenAI, service.PlatformGemini,
 		service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi,
 		service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax,
-		service.PlatformOpenCode,
+		service.PlatformOpenCodeGo,
 	}
 }
 

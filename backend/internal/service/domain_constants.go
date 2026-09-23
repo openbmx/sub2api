@@ -44,13 +44,12 @@ const (
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformGrok        = domain.PlatformGrok
 	// 国产 OpenAI 兼容供应商（与 grok 一样经 OpenAI 网关转发）。
-	PlatformKimi     = domain.PlatformKimi
-	PlatformZhipu    = domain.PlatformZhipu
-	PlatformDeepseek = domain.PlatformDeepseek
-	PlatformMiniMax  = domain.PlatformMiniMax
-	// OpenCode 同样经 OpenAI 网关转发，但不是国产供应商。
-	PlatformOpenCode  = domain.PlatformOpenCode
-	PlatformComposite = domain.PlatformComposite
+	PlatformKimi       = domain.PlatformKimi
+	PlatformZhipu      = domain.PlatformZhipu
+	PlatformDeepseek   = domain.PlatformDeepseek
+	PlatformMiniMax    = domain.PlatformMiniMax
+	PlatformOpenCodeGo = domain.PlatformOpenCodeGo
+	PlatformComposite  = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
 	PlatformKiro = "kiro"
@@ -60,6 +59,8 @@ const (
 const (
 	AccountModePayG   = domain.AccountModePayG
 	AccountModeCoding = domain.AccountModeCoding
+	AccountModeZen    = domain.AccountModeZen
+	AccountModeGo     = domain.AccountModeGo
 )
 
 // 上游 API 协议（国产供应商）：决定转发端点与格式，与接入模式正交。
@@ -80,9 +81,9 @@ const (
 	DefaultDeepseekBaseURL    = "https://api.deepseek.com"
 	// MiniMax 按量付费与 Coding/Token Plan 共用推理域名，靠 API Key 区分套餐。
 	DefaultMiniMaxBaseURL = "https://api.minimaxi.com/v1"
-	// OpenCode 的订阅（Go）与按量（Zen）走不同路径前缀，Responses 与 Chat
-	// Completions 共用同一个 base。见 https://opencode.ai/docs/go/
-	DefaultOpenCodeGoBaseURL  = "https://opencode.ai/zen/go/v1"
+	// OpenCode Go：Chat Completions / Responses / models 共用 /v1 基址。
+	DefaultOpenCodeGoBaseURL = "https://opencode.ai/zen/go/v1"
+	// OpenCode Zen：按量付费网关，模型列表为 /zen/v1/models。
 	DefaultOpenCodeZenBaseURL = "https://opencode.ai/zen/v1"
 )
 
@@ -94,9 +95,7 @@ const (
 	DefaultZhipuAnthropicBaseURL      = "https://open.bigmodel.cn/api/anthropic"
 	DefaultDeepseekAnthropicBaseURL   = "https://api.deepseek.com/anthropic"
 	DefaultMiniMaxAnthropicBaseURL    = "https://api.minimaxi.com/anthropic"
-	// OpenCode 的 Anthropic 端点是 {前缀}/v1/messages，与 Chat Completions 同在
-	// /v1 下。由于本组常量会被追加 "/v1/messages"，这里必须停在版本段之前，
-	// 否则会拼成 .../v1/v1/messages。
+	// OpenCode Go Anthropic 基址不含 /v1：nativeAnthropicTargetURL 会再拼 /v1/messages。
 	DefaultOpenCodeGoAnthropicBaseURL  = "https://opencode.ai/zen/go"
 	DefaultOpenCodeZenAnthropicBaseURL = "https://opencode.ai/zen"
 )
@@ -104,20 +103,27 @@ const (
 // IsCNProvider 报告 platform 是否属于「多协议 OpenAI 兼容上游」家族：
 // 国产四家（kimi/zhipu/deepseek/minimax）加 opencode。
 //
-// 名字保留历史叫法（该谓词有约 30 处调用点，重命名会在每次上游合并时全线冲突），
-// 但语义自始至终是结构性的而非地域性的——「经 OpenAI 网关转发、支持
-// account_mode × api_protocol × 分协议 base_url 的上游」。opencode 完全符合，
-// 因此直接入列而不是另起一套平行抽象。
-//
-// 真正带地域语义的是额度与余额查询（各供应商专有端点），那两处用的是显式平台
-// 白名单而不是本谓词，所以 opencode 与 deepseek 一样天然被排除在外。
+// OpenCode 不在此列：本仓库早期版本曾把它并进来，改用上游实现后它由
+// IsOpenCodeGo / IsMultiProtocolAPIKeyProvider 单独表达——后者才是「经 OpenAI
+// 网关转发、支持 adaptive 协议分流」这层结构性语义的正确落点。
 func IsCNProvider(platform string) bool {
 	switch platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCode:
+	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax:
 		return true
 	default:
 		return false
 	}
+}
+
+// IsOpenCodeGo 报告 platform 是否为 OpenCode Go 订阅网关。
+func IsOpenCodeGo(platform string) bool {
+	return platform == PlatformOpenCodeGo
+}
+
+// IsMultiProtocolAPIKeyProvider 报告 platform 是否为多协议 API Key 网关
+// （国产供应商 + OpenCode）：走 OpenAI 网关、支持 adaptive 协议分流。
+func IsMultiProtocolAPIKeyProvider(platform string) bool {
+	return IsCNProvider(platform) || platform == PlatformOpenCodeGo
 }
 
 // AllowedQuotaPlatforms 是允许设置 user × platform quota 的平台列表（单一权威来源）。
@@ -133,7 +139,7 @@ var AllowedQuotaPlatforms = []string{
 	PlatformZhipu,
 	PlatformDeepseek,
 	PlatformMiniMax,
-	PlatformOpenCode,
+	PlatformOpenCodeGo,
 }
 
 // AllowedSchedulingThresholdPlatforms 是允许设置账号自动停调阈值的平台列表。
@@ -148,7 +154,7 @@ var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformKimi,
 	PlatformZhipu,
 	PlatformMiniMax,
-	PlatformOpenCode,
+	PlatformOpenCodeGo,
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。
@@ -537,6 +543,15 @@ const (
 	// user-facing aggregate view. When false: user endpoint returns an empty list and the
 	// sidebar entry is hidden. Defaults to false (opt-in feature).
 	SettingKeyAvailableChannelsEnabled = "available_channels_enabled"
+
+	// SettingKeySubscriptionEnabled is a DB-backed soft switch for the user-facing
+	// subscription surface: sidebar entries, purchase-page subscription tab, header
+	// progress badge, usage billing-type filter and the /subscriptions route. When
+	// false users can no longer buy or browse subscriptions from the UI; the
+	// subscriptions API, existing subscription billing and admin subscription
+	// management are unaffected. Together with BALANCE_PAYMENT_DISABLED it forms the
+	// admin "site billing mode" selector. Defaults to true (opt-out feature).
+	SettingKeySubscriptionEnabled = "subscription_enabled"
 
 	// SettingKeyModelPlazaEnabled is a DB-backed soft switch for the Model Plaza page
 	// (public group/model pricing showcase). When false: the plaza endpoint returns 404

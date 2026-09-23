@@ -72,7 +72,13 @@ const (
 	MonitorProviderMiniMax     = "minimax"
 	// OpenCode 复用 OpenAI 兼容探活。它没有公开的用量/额度端点，所以配额模式会
 	// 落到 AccountUsageService 的本地统计，与 gemini/grok 同型降级而非永久 error。
-	MonitorProviderOpenCode = "opencode"
+	//
+	// 值必须是 'opencode_go'：本仓库原先用 'opencode'，合并上游 OpenCode 实现后
+	// 由 238_a_rename_opencode_to_opencode_go.sql 把存量行改名，且上游
+	// 238_opencode_go_platform.sql 重建的 channel_monitors_provider_check 只允许
+	// 'opencode_go'。留在 'opencode' 会让本常量成为数据库永远不可能出现的键，
+	// adapter 表形同虚设，新建监控也会直接违反 CHECK 约束。
+	MonitorProviderOpenCode = "opencode_go"
 
 	// MonitorCheckMode 检测模式（channel_monitors.check_mode）。
 	//   probe       - LLM 探活（默认，原有行为）
@@ -188,7 +194,7 @@ var (
 		"CHANNEL_MONITOR_ENDPOINT_SCHEME", "endpoint must use https scheme",
 	)
 	ErrChannelMonitorEndpointPath = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_ENDPOINT_PATH", "endpoint must be base origin only (no path/query/fragment)",
+		"CHANNEL_MONITOR_ENDPOINT_PATH", "endpoint must not contain query parameters or a fragment",
 	)
 	ErrChannelMonitorEndpointPrivate = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_ENDPOINT_PRIVATE", "endpoint must be a public host",

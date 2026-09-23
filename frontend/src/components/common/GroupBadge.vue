@@ -174,7 +174,7 @@ const labelClass = computed(() => {
   if (props.platform === 'minimax') {
     return `${base} bg-rose-200/60 text-rose-800 dark:bg-rose-800/40 dark:text-rose-300`
   }
-  if (props.platform === 'opencode') {
+  if (props.platform === 'opencode_go') {
     return `${base} bg-amber-200/60 text-amber-800 dark:bg-amber-800/40 dark:text-amber-300`
   }
   if (props.platform === 'composite') {
@@ -235,7 +235,7 @@ const badgeClass = computed(() => {
       ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
       : 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-400'
   }
-  if (props.platform === 'opencode') {
+  if (props.platform === 'opencode_go') {
     return isSubscription.value
       ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
       : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400'
