@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sub2API one-click deploy on Windows — builds THIS working tree and starts the stack.
 
@@ -46,8 +46,39 @@ if ($LASTEXITCODE -ne 0) {
 function New-RandomHex {
     param([int]$Bytes = 32)
     $buffer = [byte[]]::new($Bytes)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
+    # Not RandomNumberGenerator.Fill: that API does not exist in .NET Framework,
+    # so it throws on Windows PowerShell 5.1 before any secret is written.
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($buffer) } finally { $rng.Dispose() }
     -join ($buffer | ForEach-Object { $_.ToString('x2') })
+}
+
+# Runs a native command without letting its stderr become a terminating error:
+# under $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 turns redirected
+# native stderr into exceptions.
+function Invoke-NativeQuietly {
+    param([scriptblock]$Command)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Command 2>$null } finally { $ErrorActionPreference = $previous }
+}
+
+# Postgres reads POSTGRES_PASSWORD only when it first creates the database, and
+# the backend reads ADMIN_PASSWORD only when it first creates the admin, so
+# neither may be (re)generated for an existing stack: a new POSTGRES_PASSWORD
+# locks sub2api out of its own database, and a new ADMIN_PASSWORD never applies.
+function Test-PostgresInitialized {
+    if ($LocalDirs) {
+        return (Test-Path postgres_data) -and (@(Get-ChildItem -Force -LiteralPath postgres_data -ErrorAction SilentlyContinue).Count -gt 0)
+    }
+    $project = Invoke-NativeQuietly { docker compose -f $baseCompose config } |
+        Select-String -Pattern '^name:\s*(\S+)' | Select-Object -First 1 |
+        ForEach-Object { $_.Matches[0].Groups[1].Value }
+    if (-not $project) { $project = (Split-Path -Leaf (Get-Location)).ToLowerInvariant() }
+    $volumes = Invoke-NativeQuietly {
+        docker volume ls -q --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.volume=postgres_data'
+    }
+    return [bool]$volumes
 }
 
 # Values shipped in .env.example that must not survive into a real deployment.
@@ -91,12 +122,21 @@ if (-not (Test-Path .env)) {
     Write-Host "created .env from .env.example"
 }
 
-Set-EnvIfBlank -Key 'POSTGRES_PASSWORD' -Value (New-RandomHex -Bytes 16)
+$databaseExists = Test-PostgresInitialized
+if ($databaseExists -and ($placeholders -contains (Get-EnvValue -Key 'POSTGRES_PASSWORD'))) {
+    Write-Warning ("the database already exists, so POSTGRES_PASSWORD is left as it is. " +
+        "Postgres only applies it when creating the database; changing it here would lock sub2api out. " +
+        "Rotate it inside Postgres first, then update .env.")
+} else {
+    Set-EnvIfBlank -Key 'POSTGRES_PASSWORD' -Value (New-RandomHex -Bytes 16)
+}
 Set-EnvIfBlank -Key 'JWT_SECRET'        -Value (New-RandomHex -Bytes 32)
 # Must be 64 hex chars; the backend refuses to persist Prompt Audit endpoint
 # tokens without a fixed key (they would not survive a restart).
 Set-EnvIfBlank -Key 'TOTP_ENCRYPTION_KEY' -Value (New-RandomHex -Bytes 32)
-Set-EnvIfBlank -Key 'ADMIN_PASSWORD'    -Value (New-RandomHex -Bytes 12)
+if (-not $databaseExists) {
+    Set-EnvIfBlank -Key 'ADMIN_PASSWORD' -Value (New-RandomHex -Bytes 12)
+}
 
 if ($doBuild -and ($placeholders -contains (Get-EnvValue -Key 'SUB2API_IMAGE'))) {
     Set-EnvIfBlank -Key 'SUB2API_IMAGE' -Value 'sub2api:local'
@@ -121,7 +161,7 @@ if ($doBuild) {
     $composeArgs += @('-f', 'docker-compose.build.yml')
     $upArgs += '--build'
     if (Get-Command git -ErrorAction SilentlyContinue) {
-        $commit = (git -C .. rev-parse --short HEAD 2>$null)
+        $commit = Invoke-NativeQuietly { git -C .. rev-parse --short HEAD }
         if ($LASTEXITCODE -eq 0 -and $commit) { $env:BUILD_COMMIT = $commit }
     }
     Write-Host "building image from source (this takes a few minutes on a cold cache)..."
@@ -139,7 +179,12 @@ if (-not $port) { $port = '8080' }
 Write-Host ""
 Write-Host "Sub2API is starting on http://localhost:$port"
 Write-Host "  admin email:    $(Get-EnvValue -Key 'ADMIN_EMAIL')"
-Write-Host "  admin password: $(Get-EnvValue -Key 'ADMIN_PASSWORD')"
+if ($script:generated -contains 'ADMIN_PASSWORD') {
+    Write-Host "  admin password: $(Get-EnvValue -Key 'ADMIN_PASSWORD')"
+} else {
+    # Only the first boot applies ADMIN_PASSWORD; after that the admin changes it in the UI.
+    Write-Host "  admin password: (unchanged - the one set when this stack was first created)"
+}
 Write-Host ""
 Write-Host "Database migrations run automatically on first boot (AUTO_SETUP=true)."
 Write-Host "Follow startup with:"

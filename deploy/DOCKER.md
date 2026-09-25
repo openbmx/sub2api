@@ -16,16 +16,22 @@ version, run a locally built image, or deliberately fall back to upstream.
 cd deploy && ./one-click.sh
 ```
 
-Windows (Docker Desktop):
+Windows (Docker Desktop), in Windows PowerShell 5.1 or PowerShell 7. Windows
+blocks unsigned scripts by default, so bypass the execution policy for this one
+run instead of changing it machine-wide:
 
 ```powershell
-cd deploy; .\one-click.ps1
+cd deploy; powershell -ExecutionPolicy Bypass -File .\one-click.ps1
 ```
 
 It creates `.env` from `.env.example`, generates any missing secrets, builds the
 image from this working tree, and starts the stack. Re-running is safe: existing
 secrets are never regenerated — rotating `TOTP_ENCRYPTION_KEY` would invalidate
-every stored TOTP secret and every saved Prompt Audit endpoint token.
+every stored TOTP secret and every saved Prompt Audit endpoint token. When the
+database already exists, `POSTGRES_PASSWORD` and `ADMIN_PASSWORD` are left alone
+even if they still hold the example values: both only take effect when the stack
+is first created, so a new value would lock the app out of its database or be a
+password that was never applied.
 
 Options: `--local` (host directories instead of named volumes, easier to back up
 and migrate) and `--no-build` (reuse the current image).

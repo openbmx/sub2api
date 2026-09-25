@@ -101,13 +101,44 @@ if [[ ! -f .env ]]; then
 fi
 chmod 600 .env 2>/dev/null || true
 
+# postgres_initialized — whether this stack's database already exists. Postgres
+# reads POSTGRES_PASSWORD only when it first creates the database, and the
+# backend reads ADMIN_PASSWORD only when it first creates the admin, so neither
+# may be (re)generated for an existing stack: a new POSTGRES_PASSWORD locks
+# sub2api out of its own database, and a new ADMIN_PASSWORD is never applied.
+postgres_initialized() {
+  if ${USE_LOCAL_DIRS}; then
+    [[ -d postgres_data && -n "$(ls -A postgres_data 2>/dev/null)" ]]
+    return
+  fi
+  local project
+  project="$("${COMPOSE[@]}" -f "${BASE_COMPOSE}" config 2>/dev/null | sed -n 's/^name: *//p' | head -n 1 || true)"
+  [[ -n "${project}" ]] || project="$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "$(docker volume ls -q \
+    --filter "label=com.docker.compose.project=${project}" \
+    --filter "label=com.docker.compose.volume=postgres_data" 2>/dev/null || true)" ]]
+}
+
 GENERATED=()
-set_if_blank POSTGRES_PASSWORD "$(random_hex 16)"
+if postgres_initialized; then
+  DATABASE_EXISTS=true
+else
+  DATABASE_EXISTS=false
+fi
+if ${DATABASE_EXISTS} && is_placeholder "$(current_value POSTGRES_PASSWORD)"; then
+  echo "warning: the database already exists, so POSTGRES_PASSWORD is left as it is." >&2
+  echo "         Postgres only applies it when creating the database; changing it here" >&2
+  echo "         would lock sub2api out. Rotate it inside Postgres first, then update .env." >&2
+else
+  set_if_blank POSTGRES_PASSWORD "$(random_hex 16)"
+fi
 set_if_blank JWT_SECRET "$(random_hex 32)"
 # Must be 64 hex chars; the backend refuses to persist Prompt Audit endpoint
 # tokens without a fixed key (they would not survive a restart).
 set_if_blank TOTP_ENCRYPTION_KEY "$(random_hex 32)"
-set_if_blank ADMIN_PASSWORD "$(random_hex 12)"
+if ! ${DATABASE_EXISTS}; then
+  set_if_blank ADMIN_PASSWORD "$(random_hex 12)"
+fi
 
 if ${DO_BUILD}; then
   # Point the stack at the image we are about to build.
@@ -148,7 +179,13 @@ PORT="$(current_value SERVER_PORT)"; PORT="${PORT:-8080}"
 echo
 echo "Sub2API is starting on http://localhost:${PORT}"
 echo "  admin email:    $(current_value ADMIN_EMAIL)"
-echo "  admin password: $(current_value ADMIN_PASSWORD)"
+# ${arr[*]-}: an empty array is "unbound" under set -u in bash 3.2 (macOS).
+if [[ " ${GENERATED[*]-} " == *" ADMIN_PASSWORD "* ]]; then
+  echo "  admin password: $(current_value ADMIN_PASSWORD)"
+else
+  # Only the first boot applies ADMIN_PASSWORD; after that the admin changes it in the UI.
+  echo "  admin password: (unchanged — the one set when this stack was first created)"
+fi
 echo
 echo "Database migrations run automatically on first boot (AUTO_SETUP=true)."
 echo "Follow startup with:"
