@@ -168,29 +168,54 @@ func ReadLenientJSONRequestBodyWithPrealloc(req *http.Request, maxNormalizedByte
 func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
 	switch encoding {
 	case "zstd":
-		dec, err := zstd.NewReader(bytes.NewReader(raw))
+		// The library default accepts a declared window of up to 512 MB and
+		// allocates that history on the first block, so a ~2 KB body could pin
+		// half a gigabyte before any size check ran. No legitimate body needs a
+		// window above the decoded-size cap (a single-segment frame's window is
+		// its content size). One synchronous decoder: request bodies are small,
+		// and concurrent decoding would multiply the per-request buffers.
+		dec, err := zstd.NewReader(bytes.NewReader(raw),
+			zstd.WithDecoderMaxWindow(maxDecompressedBodySize),
+			zstd.WithDecoderMaxMemory(maxDecompressedBodySize),
+			zstd.WithDecoderConcurrency(1),
+		)
 		if err != nil {
 			return nil, err
 		}
 		defer dec.Close()
-		return io.ReadAll(io.LimitReader(dec, maxDecompressedBodySize))
+		return readDecompressedBody(dec)
 	case "gzip", "x-gzip":
 		gr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = gr.Close() }()
-		return io.ReadAll(io.LimitReader(gr, maxDecompressedBodySize))
+		return readDecompressedBody(gr)
 	case "deflate":
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = zr.Close() }()
-		return io.ReadAll(io.LimitReader(zr, maxDecompressedBodySize))
+		return readDecompressedBody(zr)
 	default:
 		return nil, errors.New("unsupported Content-Encoding")
 	}
+}
+
+// readDecompressedBody reads at most maxDecompressedBodySize bytes and reports a
+// larger body as too large (413) instead of silently truncating it: a cut JSON
+// document surfaced as a confusing parse error, and a bomb still made the
+// server inflate and keep the full cap before anything noticed.
+func readDecompressedBody(reader io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxDecompressedBodySize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxDecompressedBodySize {
+		return nil, &http.MaxBytesError{Limit: maxDecompressedBodySize}
+	}
+	return body, nil
 }
 
 // NormalizeLenientJSONRequestBody escapes raw control bytes that broken
@@ -208,17 +233,27 @@ func NormalizeLenientJSONRequestBody(body []byte, maxNormalizedBytes int64) ([]b
 		return nil, &http.MaxBytesError{Limit: maxNormalizedBytes}
 	}
 
+	// Size the result before allocating it. Each control byte inside a string
+	// becomes a six-byte \u00XX escape, so a body of NULs grows sixfold; growing
+	// the buffer by doubling let a 64 MB body allocate hundreds of MB before the
+	// limit check below fired. Counting first rejects an oversized result without
+	// allocating and makes the one allocation exact.
+	controlBytes := countJSONStringControlBytes(body)
+	if controlBytes == 0 {
+		return body, nil
+	}
+	normalizedSize := int64(len(body)) + 5*int64(controlBytes)
+	if normalizedSize > maxNormalizedBytes {
+		return nil, &http.MaxBytesError{Limit: maxNormalizedBytes}
+	}
+
 	var out []byte
 	inString := false
 	escaped := false
 	for i, b := range body {
 		if inString && isJSONControlByte(b) {
 			if out == nil {
-				capHint := len(body) + 6
-				if int64(capHint) > maxNormalizedBytes {
-					capHint = int(maxNormalizedBytes)
-				}
-				out = make([]byte, 0, capHint)
+				out = make([]byte, 0, normalizedSize)
 				out = append(out, body[:i]...)
 			}
 			if int64(len(out)+6) > maxNormalizedBytes {
@@ -249,6 +284,30 @@ func NormalizeLenientJSONRequestBody(body []byte, maxNormalizedBytes int64) ([]b
 		return out, nil
 	}
 	return body, nil
+}
+
+// countJSONStringControlBytes counts the control bytes NormalizeLenientJSONRequestBody
+// will escape. It walks the same string/escape state machine as that loop.
+func countJSONStringControlBytes(body []byte) int {
+	count := 0
+	inString := false
+	escaped := false
+	for _, b := range body {
+		if inString && isJSONControlByte(b) {
+			count++
+			escaped = false
+			continue
+		}
+		switch {
+		case escaped:
+			escaped = false
+		case inString && b == '\\':
+			escaped = true
+		case b == '"':
+			inString = !inString
+		}
+	}
+	return count
 }
 
 func trimUTF8BOM(body []byte) []byte {
