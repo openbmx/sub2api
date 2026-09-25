@@ -308,6 +308,11 @@ func TestChannelMonitorV2ErrorAggregationExcludesGatewayRefusals(t *testing.T) {
 	// The predicate is alias-parameterised because loadErrorDetails applies it to
 	// both current_error and the newer-row anti-join.
 	require.Contains(t, channelMonitorV2ExcludeLocalRefusal("newer"), "newer.is_business_limited")
+
+	// An upstream cyber_policy hit is logged request-phase + business-limited as
+	// well, but the provider answered it: provider-owned rows must stay counted,
+	// or the content_policy category never sees a provider refusal.
+	require.Contains(t, channelMonitorV2ExcludeLocalRefusal("m"), "COALESCE(m.error_owner, '') <> 'provider'")
 }
 
 func TestChannelMonitorV2ErrorAggregationResolvesCompositePlatform(t *testing.T) {

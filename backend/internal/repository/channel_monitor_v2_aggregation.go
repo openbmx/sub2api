@@ -242,8 +242,13 @@ ELSE 2147483647 END`
 // the gateway issued itself. Both this file's aggregation SQL and the ad-hoc
 // query in loadErrorDetails must apply it, against their own table alias;
 // TestChannelMonitorV2ErrorAggregationExcludesGatewayRefusals pins them together.
+//
+// Provider-owned rows are kept even when they share the local-refusal shape: an
+// upstream cyber_policy hit is logged as request-phase and business-limited too
+// (buildCyberPolicyOpsErrorEntry), but the provider did answer it, so it is
+// channel evidence and must keep feeding the content_policy category.
 func channelMonitorV2ExcludeLocalRefusal(alias string) string {
-	return "NOT (" + alias + ".is_business_limited AND " + alias + ".error_phase = 'request')"
+	return "NOT (" + alias + ".is_business_limited AND " + alias + ".error_phase = 'request' AND COALESCE(" + alias + ".error_owner, '') <> 'provider')"
 }
 
 // Error dedup lookback: request_id branch is bounded by chunk start minus 90
@@ -292,8 +297,9 @@ WITH dedup AS (
     -- the same rows here unless they are excluded. Scoped to phase 'request' on
     -- purpose: routing capacity limits are business-limited too, but those DO
     -- describe the channel and must keep feeding account_pool_unavailable /
-    -- rate_or_capacity.
-    AND NOT (current_error.is_business_limited AND current_error.error_phase = 'request')
+    -- rate_or_capacity. Provider-owned rows (an upstream cyber_policy hit is
+    -- logged in the same shape) did reach the channel and are kept.
+    AND NOT (current_error.is_business_limited AND current_error.error_phase = 'request' AND COALESCE(current_error.error_owner, '') <> 'provider')
     AND (COALESCE(current_error.status_code, 0) >= 400 OR current_error.error_type = 'cyber_policy')
   ORDER BY COALESCE(NULLIF(current_error.request_id, ''), 'error:' || current_error.id::text), current_error.created_at DESC, current_error.id DESC
 ), classified AS (
