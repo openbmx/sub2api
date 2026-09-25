@@ -259,3 +259,43 @@ func probeEndpoint(baseURL, token string) UpdateEndpoint {
 		Model: DefaultGuardModel, Token: token, TimeoutMS: 1000, InputLimit: 1024, Enabled: true,
 	}
 }
+
+// Redirects are followed (destinations are the administrator's call, see
+// TestOpenAICompatibleScannerFollowsRedirectAndRejectsOversize), but a custom
+// header — how a non-Bearer credential is configured — must not follow one to
+// another host. Go itself drops only Authorization and Cookie there.
+func TestSecureHTTPClientDropsCustomHeadersOnCrossHostRedirect(t *testing.T) {
+	var received atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		received.Store(r.Header.Get("X-Api-Key"))
+	}))
+	defer target.Close()
+	for _, tc := range []struct {
+		name, location, wantKey string
+	}{
+		{name: "same host keeps the header", location: target.URL, wantKey: "guard-secret"},
+		// Same listener under another host name.
+		{name: "other host loses it", location: strings.Replace(target.URL, "127.0.0.1", "localhost", 1), wantKey: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			received.Store("unset")
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, tc.location+"/v1/chat/completions", http.StatusTemporaryRedirect)
+			}))
+			defer origin.Close()
+
+			endpoint := ActiveEndpoint{BaseURL: origin.URL, TimeoutMS: 2000, Headers: map[string]string{"X-Api-Key": "guard-secret"}}
+			client, err := NewSecureHTTPClient(endpoint)
+			require.NoError(t, err)
+			req, err := http.NewRequest(http.MethodPost, origin.URL+"/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+			require.NoError(t, err)
+			applyEndpointHeaders(req.Header, endpoint)
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, "the redirect is still followed")
+			require.Equal(t, tc.wantKey, received.Load())
+		})
+	}
+}

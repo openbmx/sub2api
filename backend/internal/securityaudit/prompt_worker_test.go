@@ -401,6 +401,31 @@ func TestWorkerCompletesPassWithoutEventRefreshesEveryChunkAndDeletesPayload(t *
 	require.Equal(t, int64(1), metrics.Snapshot().Allowed)
 }
 
+// A chunk may spend up to MaxTimeoutMS on every endpoint in turn, far past the
+// reclaimer's processing window, so the lease has to be kept alive during the
+// scan itself and not only between chunks.
+func TestWorkerKeepsLeaseAliveDuringASlowChunk(t *testing.T) {
+	previous := leaseHeartbeatInterval
+	leaseHeartbeatInterval = 5 * time.Millisecond
+	t.Cleanup(func() { leaseHeartbeatInterval = previous })
+
+	repo := &fakeJobRepository{}
+	payload := &fakePayloadStore{values: map[int64]string{51: "abc"}}
+	scannerCalls := 0
+	scanner := PromptScannerFunc(func(_ context.Context, endpoint ActiveEndpoint, _ string, _ []string) (*NormalizedResult, error) {
+		scannerCalls++
+		time.Sleep(60 * time.Millisecond)
+		return &NormalizedResult{Decision: EventPass, RiskLevel: RiskLow, Action: ActionAllow, Safety: "Safe", Categories: []string{}, MatchedScanners: []string{}, ScannerScores: map[string]float64{}, ScannerEvidence: map[string]string{}, GuardEndpointID: endpoint.ID}, nil
+	})
+	runner := NewRunner(&fakeConfigStore{cfg: asyncConfig(), active: true}, repo, payload, scanner, NewAtomicMetrics())
+	require.NoError(t, runner.processJob(context.Background(), 0, asyncConfig(), workerJob(1, 3)))
+
+	require.Equal(t, 1, scannerCalls, "a single chunk, so the per-chunk path refreshes exactly once")
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Greater(t, repo.refreshes, 1, "the lease must also be refreshed while that chunk is still being scanned")
+}
+
 func TestWorkerRetryBackoffTerminalFailureAndFailover(t *testing.T) {
 	now := time.Unix(200, 0).UTC()
 	for _, tt := range []struct {

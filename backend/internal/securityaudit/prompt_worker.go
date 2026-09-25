@@ -156,7 +156,9 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		}
 		chunkStarted := r.clock.Now()
 		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength, "input_limit": minimumInputLimit(endpoints), "status": "started"}))
+		stopHeartbeat := r.keepLeaseAlive(ctx, job)
 		result, scanErr := scanWithFailover(ctx, r.scanner, cfg.Scanners, endpoints, chunk, r.metrics)
+		stopHeartbeat()
 		if scanErr != nil {
 			LogWarn(EventChunkFailed, mergeLogFields(baseFields, map[string]any{
 				"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks),
@@ -329,6 +331,38 @@ func (r *Runner) setLastError(code, _ string) {
 	r.runtime.lastErrorCode = code
 	r.runtime.lastErrorMessage = message
 	r.runtime.lastErrorMu.Unlock()
+}
+
+// leaseHeartbeatInterval is how often a job's lease is refreshed while one chunk
+// is being scanned. The per-chunk refresh alone cannot outlast the reclaimer's
+// 90-second processing window: a chunk may try every endpoint in turn, each
+// allowed up to MaxTimeoutMS, and a job reclaimed mid-scan is scanned twice with
+// its first result then rejected as a lost lease. A variable so tests can shrink it.
+var leaseHeartbeatInterval = 30 * time.Second
+
+// keepLeaseAlive refreshes the job's lease every leaseHeartbeatInterval until the
+// returned stop function is called. Refresh errors are left to the existing
+// checks: the next per-chunk refresh and Complete both detect a lost lease.
+func (r *Runner) keepLeaseAlive(ctx context.Context, job *Job) (stop func()) {
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(leaseHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				_ = r.repo.RefreshLease(heartbeatCtx, job.ID, job.ClaimVersion, r.clock.Now())
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func scanWithFailover(ctx context.Context, scanner PromptScanner, scanners []string, endpoints []ActiveEndpoint, chunk string, metrics Metrics) (*NormalizedResult, error) {

@@ -475,12 +475,50 @@ func contentBlockTexts(object map[string]any, depth int) []string {
 				return []string{text}
 			}
 		}
-	case "tool_use", "tool_call", "function_call":
+	case "tool_use", "tool_call", "function_call", "custom_tool_call":
 		return toolCallTexts(object)
-	case "tool_result", "tool_output", "function_call_output":
+	case "tool_result", "tool_output", "function_call_output", "custom_tool_call_output", "local_shell_call_output", "mcp_call_output":
 		return toolResultTexts(object, depth)
+	case "mcp_call":
+		// Responses MCP items carry the call and its result on one item.
+		return append(toolCallTexts(object), toolResultTexts(object, depth)...)
+	case "local_shell_call":
+		if encoded := encodeStructuredValue(object["action"]); encoded != "" {
+			return []string{encoded}
+		}
+	case "document":
+		return documentTexts(object, depth)
+	case "search_result":
+		texts := contentTextsAtDepth(object["content"], depth+1)
+		if title := stringValue(object["title"]); title != "" {
+			texts = append([]string{title}, texts...)
+		}
+		return texts
 	}
 	return nil
+}
+
+// documentTexts reads the text an Anthropic document block feeds the model:
+// its title and context, plus a plain-text or content-block source. Base64 and
+// URL sources (PDFs, remote files) are deliberately skipped: a text guard
+// cannot judge them, and expanding them would flood the audit call.
+func documentTexts(object map[string]any, depth int) []string {
+	texts := make([]string, 0, 3)
+	for _, key := range []string{"title", "context"} {
+		if text := stringValue(object[key]); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	source, _ := object["source"].(map[string]any)
+	switch strings.ToLower(stringValue(source["type"])) {
+	case "text":
+		if data := stringValue(source["data"]); data != "" {
+			texts = append(texts, data)
+		}
+	case "content":
+		texts = append(texts, contentTextsAtDepth(source["content"], depth+1)...)
+	}
+	return texts
 }
 
 // toolCallTexts renders a tool invocation as auditable text. Anthropic puts a
@@ -632,6 +670,22 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment, turnSca
 		text: sampleTurnForScan(strings.Join(currentUserText, "\n\n"), turnScanRunes),
 		user: true, role: "user",
 	}}
+	// An OpenAI-style agent loop keeps appending assistant tool calls and
+	// role:"tool" outputs after the user's last message, so the request ends in
+	// them rather than in a user turn. They are the newest client-controlled text
+	// in the request (a tool output can carry a fetched page verbatim), so they
+	// are scanned too, under the same per-turn budget. Anthropic and Gemini put
+	// tool results inside the user turn, which leaves this empty for them.
+	if latestUserEnd < len(normalized) {
+		trailing := make([]string, 0, len(normalized)-latestUserEnd)
+		for _, segment := range normalized[latestUserEnd:] {
+			trailing = append(trailing, segment.text)
+		}
+		selected = append(selected, promptSegment{
+			text: sampleTurnForScan(strings.Join(trailing, "\n\n"), turnScanRunes),
+			role: "tool",
+		})
+	}
 	for index := latestUserStart - 1; index >= 0; index-- {
 		if !isAssistantOutputSegment(normalized[index]) {
 			continue

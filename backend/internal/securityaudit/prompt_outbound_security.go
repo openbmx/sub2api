@@ -2,6 +2,7 @@ package securityaudit
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -92,5 +93,22 @@ func NewSecureHTTPClient(endpoint ActiveEndpoint) (*http.Client, error) {
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
+		// Redirects are still followed: where a guard endpoint may send the
+		// request is the administrator's call, as above. But when a redirect
+		// leaves the endpoint's host, Go drops only Authorization and Cookie,
+		// while the custom headers exist precisely to carry non-Bearer
+		// credentials (X-Api-Key and the like). Drop those too. Setting
+		// CheckRedirect replaces Go's own 10-hop limit, so keep it here.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+				for name := range endpoint.Headers {
+					req.Header.Del(name)
+				}
+			}
+			return nil
+		},
 	}, nil
 }

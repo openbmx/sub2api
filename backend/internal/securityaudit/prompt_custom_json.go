@@ -495,6 +495,24 @@ func extractFirstJSONObject(content string) (string, bool) {
 	return "", false
 }
 
+// extractLastJSONObject returns the last balanced object in content. A reasoning
+// model restates the output template and quotes the audited text while it
+// thinks, so the first object in a chain of thought is often the example
+// {"confidence": 0.00, ...} or a payload the audited prompt planted; the
+// verdict, when one was reached, comes last.
+func extractLastJSONObject(content string) (string, bool) {
+	last, found := "", false
+	for {
+		object, ok := extractFirstJSONObject(content)
+		if !ok {
+			return last, found
+		}
+		last, found = object, true
+		// The object begins at the first '{', so this is its own offset.
+		content = content[strings.Index(content, object)+len(object):]
+	}
+}
+
 // thresholds returns the endpoint's effective decision thresholds, falling back
 // to package defaults for configs saved before these fields existed.
 func (e ActiveEndpoint) thresholds() (block, flag float64) {

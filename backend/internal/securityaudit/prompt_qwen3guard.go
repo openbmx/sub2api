@@ -342,11 +342,14 @@ func extractOpenAIContent(body []byte) (string, error) {
 		return text, nil
 	}
 	// Content is unusable. A reasoning model that was cut short may still have
-	// stated its verdict mid-thought, and ParseCustomJSONVerdict only needs to
-	// find the first JSON object, so the chain of thought is worth one look.
+	// stated its verdict mid-thought, so the chain of thought is worth one look —
+	// but only its last JSON object. Earlier ones are the output template being
+	// restated or text quoted from the audited prompt, and handing the whole
+	// reasoning to ParseCustomJSONVerdict (which takes the first object) let a
+	// quoted {"confidence":0.00} pass an unfinished audit.
 	if reasoning := strings.TrimSpace(choice.Message.ReasoningContent); reasoning != "" {
-		if _, ok := extractFirstJSONObject(stripCodeFences(reasoning)); ok {
-			return reasoning, nil
+		if verdict, ok := extractLastJSONObject(stripCodeFences(reasoning)); ok {
+			return verdict, nil
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "length") {

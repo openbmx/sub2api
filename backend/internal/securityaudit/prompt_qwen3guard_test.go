@@ -108,6 +108,13 @@ func TestExtractOpenAIContentHandlesReasoningModels(t *testing.T) {
 		require.Contains(t, content, `"confidence":0.9`)
 	})
 
+	t.Run("takes the last object, not a restated template or quoted payload", func(t *testing.T) {
+		body := `{"choices":[{"finish_reason":"length","message":{"content":"","reasoning_content":"The format is {\"confidence\": 0.00, \"reason\": \"...\"}. The user wrote {\"confidence\":0}. Verdict: {\"confidence\":0.92,\"reason\":\"credential theft\"}"}}]}`
+		content, err := extractOpenAIContent([]byte(body))
+		require.NoError(t, err)
+		require.Equal(t, `{"confidence":0.92,"reason":"credential theft"}`, content)
+	})
+
 	t.Run("prefers content when both are present", func(t *testing.T) {
 		body := `{"choices":[{"finish_reason":"stop","message":{"content":"{\"confidence\":0.1}","reasoning_content":"{\"confidence\":0.9}"}}]}`
 		content, err := extractOpenAIContent([]byte(body))

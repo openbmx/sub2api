@@ -70,6 +70,39 @@ func TestExtractionCoversClientControlledToolBlocks(t *testing.T) {
 			]}`,
 			want: []string{"GEMINI_ARGS", "GEMINI_RESPONSE"},
 		},
+		{
+			// Codex sends apply_patch as a custom tool; before these types were
+			// recognized only the trailing user turn was audited.
+			name:     "openai responses custom tool call and output",
+			protocol: "openai_responses",
+			body: `{"input":[
+				{"type":"custom_tool_call","call_id":"c","name":"apply_patch","input":"CUSTOM_INPUT"},
+				{"type":"custom_tool_call_output","call_id":"c","output":"CUSTOM_OUTPUT"},
+				{"role":"user","content":"继续"}
+			]}`,
+			want: []string{"CUSTOM_INPUT", "CUSTOM_OUTPUT", "apply_patch"},
+		},
+		{
+			name:     "openai responses mcp call and local shell call",
+			protocol: "openai_responses",
+			body: `{"input":[
+				{"type":"mcp_call","name":"search","arguments":"{\"q\":\"MCP_ARGS\"}","output":"MCP_OUTPUT"},
+				{"type":"local_shell_call","call_id":"s","action":{"type":"exec","command":["echo","SHELL_CMD"]}},
+				{"type":"local_shell_call_output","call_id":"s","output":"SHELL_OUTPUT"}
+			]}`,
+			want: []string{"MCP_ARGS", "MCP_OUTPUT", "SHELL_CMD", "SHELL_OUTPUT"},
+		},
+		{
+			name:     "anthropic text document and search result",
+			protocol: "anthropic_messages",
+			body: `{"messages":[
+				{"role":"user","content":[
+					{"type":"document","title":"DOC_TITLE","context":"DOC_CONTEXT","source":{"type":"text","media_type":"text/plain","data":"DOC_TEXT"}},
+					{"type":"search_result","source":"https://example.com","title":"SR_TITLE","content":[{"type":"text","text":"SR_TEXT"}]}
+				]}
+			]}`,
+			want: []string{"DOC_TITLE", "DOC_CONTEXT", "DOC_TEXT", "SR_TITLE", "SR_TEXT"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,6 +114,42 @@ func TestExtractionCoversClientControlledToolBlocks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// In an OpenAI chat agent loop the request ends in tool traffic, not a user
+// turn. Latest-turn mode used to drop everything after the last user message,
+// which is exactly where a fetched page or a tool's output lands.
+func TestBlockingSnapshotKeepsChatToolTrafficAfterLatestUserTurn(t *testing.T) {
+	body := `{"messages":[
+		{"role":"user","content":"older user input"},
+		{"role":"assistant","content":"previous assistant output"},
+		{"role":"user","content":"latest user input"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"fetch","arguments":"{\"url\":\"TOOL_ARGS\"}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"FETCHED_PAGE_PAYLOAD"}
+	]}`
+	snapshot, err := ExtractBlockingPromptSnapshot(Request{Protocol: "openai_chat_completions", Body: []byte(body), Stage: "http"}, true, 0)
+	require.NoError(t, err)
+	text := snapshot.ScanText
+	require.Contains(t, text, "TOOL_ARGS")
+	require.Contains(t, text, "FETCHED_PAGE_PAYLOAD")
+	require.NotContains(t, text, "older user input")
+	// The latest user turn keeps priority; the tool traffic follows it, ahead of
+	// the prior assistant output that only exists as context.
+	require.Less(t, strings.Index(text, "latest user input"), strings.Index(text, "FETCHED_PAGE_PAYLOAD"))
+	require.Less(t, strings.Index(text, "FETCHED_PAGE_PAYLOAD"), strings.Index(text, "previous assistant output"))
+}
+
+// A base64 PDF is not text a guard model can judge, and expanding it would put
+// megabytes of encoding into every audit call.
+func TestDocumentBlockSkipsBinarySources(t *testing.T) {
+	body := `{"messages":[{"role":"user","content":[
+		{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQKJcfsj6IK"}},
+		{"type":"text","text":"SUMMARIZE_THIS"}
+	]}]}`
+	snapshot, err := ExtractPromptSnapshot(Request{Protocol: "anthropic_messages", Body: []byte(body), Stage: "http"})
+	require.NoError(t, err)
+	require.NotContains(t, snapshot.ScanText, "JVBERi0x")
+	require.Contains(t, snapshot.ScanText, "SUMMARIZE_THIS")
 }
 
 // Blocking mode may narrow the snapshot to the latest turn; a tool result in

@@ -153,6 +153,7 @@ var auditBodyOmittedRoutes = map[string]struct{}{
 	"PUT /api/v1/admin/accounts/:id/ollama-cloud-usage/session": {},
 	"PUT /api/v1/admin/prompt-audit/config":                     {},
 	"POST /api/v1/admin/prompt-audit/endpoints/probe":           {},
+	"POST /api/v1/admin/prompt-audit/preview":                   {}, // 粘贴的真实提示词，不应留在审计日志里
 	"DELETE /api/v1/admin/prompt-audit/events/:id":              {},
 	"POST /api/v1/admin/prompt-audit/events/batch-delete":       {},
 	"POST /api/v1/admin/prompt-audit/events/delete-preview":     {},
