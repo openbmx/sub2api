@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/smartwalle/alipay/v3"
@@ -342,7 +341,7 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		OutTradeNo:   req.OrderID,
 		RefundAmount: req.Amount,
 		RefundReason: req.Reason,
-		OutRequestNo: fmt.Sprintf("%s-refund-%d", req.OrderID, time.Now().UnixNano()),
+		OutRequestNo: alipayRefundRequestNo(req.OrderID, req.Amount),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alipay TradeRefund: %w", err)
@@ -362,6 +361,15 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		RefundID: refundID,
 		Status:   refundStatus,
 	}, nil
+}
+
+// alipayRefundRequestNo is deterministic per order and amount, in the same shape
+// as wxpayRefundID. Alipay deduplicates refunds by out_request_no within a
+// trade: when a refund went through but its reply was lost, the order is rolled
+// back to refund_failed and retried, and a fresh number (it used to embed
+// time.Now) made that retry a second partial refund instead of a replay.
+func alipayRefundRequestNo(orderID, amount string) string {
+	return wxpayRefundID(orderID, amount)
 }
 
 // CancelPayment closes a pending trade on Alipay.
