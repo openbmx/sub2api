@@ -554,6 +554,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
+	// 关闭全站 TOTP 同样需要 step-up：它让密码登录不再要求 2FA，是「重置管理员密码
+	// → 重新登录 → 换绑自己的 TOTP → 通过 step-up」这条链的第一步。
+	if !req.TotpEnabled && previousSettings.TotpEnabled {
+		if !middleware.EnforceStepUp(c, h.totpService, h.userService, h.settingService) {
+			return
+		}
+	}
 
 	// 验证参数
 	if req.DefaultConcurrency < 1 {

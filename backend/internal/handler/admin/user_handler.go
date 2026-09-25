@@ -245,6 +245,19 @@ func (h *UserHandler) BindAuthIdentity(c *gin.Context) {
 		return
 	}
 
+	// 给管理员账号绑定第三方身份等于给它加一条登录途径（OAuth 登录不走 TOTP），
+	// 与改密码同级敏感，需要 step-up。
+	target, err := h.adminService.GetUser(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if target.Role == service.RoleAdmin {
+		if !middleware.EnforceStepUp(c, h.totpService, h.userService, h.settingService) {
+			return
+		}
+	}
+
 	input := service.AdminBindAuthIdentityInput{
 		ProviderType:    req.ProviderType,
 		ProviderKey:     req.ProviderKey,
@@ -337,6 +350,23 @@ func (h *UserHandler) Update(c *gin.Context) {
 			return
 		}
 		if target.Role != service.RoleAdmin {
+			if !middleware.EnforceStepUp(c, h.totpService, h.userService, h.settingService) {
+				return
+			}
+		}
+	}
+
+	// 改管理员账号的密码或邮箱同样需要 step-up：否则拿到管理员会话的人可以先重置
+	// 密码重新登录、再换绑自己的 TOTP，从而满足 step-up 本身。编辑表单总是带着
+	// email，所以只在邮箱真的变化时才算。
+	if req.Password != "" || req.Email != "" {
+		target, err := h.adminService.GetUser(c.Request.Context(), userID)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		emailChanged := req.Email != "" && !strings.EqualFold(strings.TrimSpace(req.Email), strings.TrimSpace(target.Email))
+		if target.Role == service.RoleAdmin && (req.Password != "" || emailChanged) {
 			if !middleware.EnforceStepUp(c, h.totpService, h.userService, h.settingService) {
 				return
 			}
