@@ -7,10 +7,25 @@
 package proxyurl
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 )
+
+// Redact returns raw with any password masked, for logs. Input that does not
+// parse is not echoed at all, since it may still carry a secret.
+func Redact(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "<invalid proxy URL>"
+	}
+	return parsed.Redacted()
+}
 
 // allowedSchemes 代理协议白名单
 var allowedSchemes = map[string]bool{
@@ -41,7 +56,12 @@ func Parse(raw string) (trimmed string, parsed *url.URL, err error) {
 
 	parsed, err = url.Parse(trimmed)
 	if err != nil {
-		// 不使用 %w 包装，避免 url.Parse 的底层错误消息泄漏原始 URL（可能含凭据）
+		// *url.Error 的消息形如 `parse "<原始 URL>": ...`，原样格式化（无论 %v 还是 %w）
+		// 都会带出其中的凭据，所以只保留底层原因。
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return "", nil, fmt.Errorf("invalid proxy URL: %v", err)
 	}
 
