@@ -669,6 +669,11 @@ func (s *AuthService) canBypassRegistrationDisabledForOAuth(ctx context.Context,
 	if signupSource != "dingtalk" {
 		return false
 	}
+	// 豁免只放开 registration_enabled 总开关；风控中心的 IPv6 禁注册另算，
+	// 否则 IsRegistrationEnabled 里的 IPv6 拦截会被这条豁免整个绕过。
+	if s.settingService.isIPv6RegistrationBlocked(ctx) {
+		return false
+	}
 	cfg, err := s.settingService.GetDingTalkConnectOAuthConfig(ctx)
 	if err != nil || !cfg.Enabled || !cfg.BypassRegistration {
 		return false

@@ -10,11 +10,16 @@ import (
 )
 
 // ipv6RestrictedPathPrefixes 网关 API 前缀集合：IPv6 拦截只作用于这些路径
-// （面板 /api/ 与 SPA 静态资源不受影响；注册链路由 IsRegistrationEnabled 统一拦截）。
-// 与 internal/web/embed_on.go 的后端端点前缀及 routes/gateway.go 的根别名保持同步。
+// （面板 /api/v1 与 SPA 静态资源不受影响；注册链路由 IsRegistrationEnabled 统一拦截）。
+// 与 internal/web/embed_on.go 的后端端点前缀及 routes/gateway.go 的根别名保持同步；
+// TestIPv6RestrictedPathsCoverEveryGatewayRoute 遍历实际注册的网关路由做兜底，
+// 上游新增根别名而这里没跟上时会直接失败。
 var ipv6RestrictedPathPrefixes = []string{
 	"/v1/",
 	"/v1beta/",
+	"/v3/",
+	"/api/v3/", // Seedance 兼容别名 /api/v3/contents/...；面板走 /api/v1，不受影响
+	"/contents/",
 	"/backend-api/",
 	"/antigravity/",
 	"/responses",
@@ -24,13 +29,20 @@ var ipv6RestrictedPathPrefixes = []string{
 	"/models",
 	"/alpha/",
 	"/images/",
-	"/videos/",
+	"/videos", // 不带尾斜杠：根路由 POST /videos 本身也是网关端点
 	"/tts",
 	"/stt",
 	"/custom-voices",
 	"/realtime",
 	"/web_search",
 	"/x_search",
+}
+
+// IsIPv6RestrictedPath reports whether IPv6 blocking applies to path. Exported
+// for the route-coverage test in package server (routes imports middleware, so
+// the test cannot live here).
+func IsIPv6RestrictedPath(path string) bool {
+	return isIPv6RestrictedPath(path)
 }
 
 func isIPv6RestrictedPath(path string) bool {
