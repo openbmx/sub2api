@@ -79,7 +79,15 @@
           <div v-if="ipAccessLoading" class="flex items-center justify-center px-6 py-10">
             <div class="h-6 w-6 animate-spin rounded-full border-b-2 border-primary-600"></div>
           </div>
-          <div v-else class="grid grid-cols-1 gap-8 px-6 py-5 lg:grid-cols-2">
+          <div
+            v-if="!ipAccessLoading && ipAccessClientIPSpoofable"
+            class="mx-6 mt-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+            data-test="ip-access-spoof-warning"
+          >
+            <p class="font-medium">{{ t('admin.riskControl.ipAccess.spoofWarningTitle') }}</p>
+            <p class="mt-1">{{ t('admin.riskControl.ipAccess.spoofWarning', { ip: ipAccessDetectedIP || '-' }) }}</p>
+          </div>
+          <div v-if="!ipAccessLoading" class="grid grid-cols-1 gap-8 px-6 py-5 lg:grid-cols-2">
             <div class="space-y-4">
               <div class="flex items-start justify-between gap-4">
                 <div>
@@ -1915,6 +1923,8 @@ function applyConfig(config: ContentModerationConfig) {
 // ---- IP 访问控制（IP 黑名单 + IPv6 拦截）----
 const ipAccessLoading = ref(true)
 const ipAccessSaving = ref(false)
+const ipAccessClientIPSpoofable = ref(false)
+const ipAccessDetectedIP = ref('')
 const ipAccessForm = reactive({
   ip_blacklist_enabled: false,
   ip_blacklist_text: '',
@@ -1929,6 +1939,8 @@ function applyIPAccess(settings: IPAccessControlSettings) {
   ipAccessForm.ip_blacklist_message = settings.ip_blacklist_message ?? ''
   ipAccessForm.ipv6_block_enabled = settings.ipv6_block_enabled
   ipAccessForm.ipv6_block_message = settings.ipv6_block_message ?? ''
+  ipAccessClientIPSpoofable.value = settings.client_ip_spoofable === true
+  ipAccessDetectedIP.value = settings.detected_client_ip ?? ''
 }
 
 async function loadIPAccess() {

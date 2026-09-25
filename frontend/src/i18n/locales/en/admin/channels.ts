@@ -254,6 +254,8 @@ export default {
       settingsTitle: 'Content Moderation Settings',
       refreshStatus: 'Refresh Status',
       ipAccess: {
+        spoofWarningTitle: 'Client IP can be spoofed, so the blacklist and IPv6 block may not hold',
+        spoofWarning: 'The client IP is currently taken from request headers (CF-Connecting-IP / X-Real-IP / X-Forwarded-For). If the service is reachable directly, or the reverse proxy does not overwrite these headers, anyone can forge an IP and get past these blocks. Behind a reverse proxy, set SERVER_TRUSTED_PROXIES first, then turn off "Trust forwarded client IP" in System Settings. Your IP as detected for this request: {ip}',
         title: 'IP Access Control',
         description: 'IP/CIDR blacklist and IPv6 blocking. Takes effect globally within ~5 seconds after saving (independent of the moderation switch).',
         save: 'Save',

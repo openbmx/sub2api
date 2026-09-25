@@ -4,9 +4,30 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+// ipAccessControlResponse 在配置之外附带客户端 IP 的来源，让管理员知道这份黑名单
+// 与 IPv6 拦截在当前部署下是否真的拦得住。
+type ipAccessControlResponse struct {
+	service.IPAccessControlSettings
+	// ClientIPSpoofable：客户端 IP 取自原始转发头（兼容模式，会覆盖
+	// server.trusted_proxies）。直连或反代未覆盖这些头时，任何客户端都能用伪造的
+	// CF-Connecting-IP / X-Real-IP / X-Forwarded-For 绕过黑名单与 IPv6 拦截。
+	ClientIPSpoofable bool `json:"client_ip_spoofable"`
+	// DetectedClientIP 是服务端为本次请求识别出的管理员 IP，便于对照核实。
+	DetectedClientIP string `json:"detected_client_ip"`
+}
+
+func newIPAccessControlResponse(c *gin.Context, settings service.IPAccessControlSettings) ipAccessControlResponse {
+	return ipAccessControlResponse{
+		IPAccessControlSettings: settings,
+		ClientIPSpoofable:       ip.ForwardedHeadersTrusted(c),
+		DetectedClientIP:        middleware2.SecurityClientIP(c),
+	}
+}
 
 // ipAccessControlUpdateRequest 指针字段区分"未提供"（保持现值）与显式设置。
 type ipAccessControlUpdateRequest struct {
@@ -27,7 +48,7 @@ func (h *SettingHandler) GetIPAccessControl(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, settings)
+	response.Success(c, newIPAccessControlResponse(c, settings))
 }
 
 // UpdateIPAccessControl 更新 IP 访问控制配置
@@ -74,5 +95,5 @@ func (h *SettingHandler) UpdateIPAccessControl(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	response.Success(c, updated)
+	response.Success(c, newIPAccessControlResponse(c, updated))
 }

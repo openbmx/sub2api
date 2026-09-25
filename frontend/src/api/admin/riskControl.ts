@@ -314,6 +314,10 @@ export interface IPAccessControlSettings {
   ip_blacklist_message: string
   ipv6_block_enabled: boolean
   ipv6_block_message: string
+  /** 客户端 IP 取自原始转发头（兼容模式）时为 true：此时黑名单与 IPv6 拦截可被伪造 IP 绕过。 */
+  client_ip_spoofable?: boolean
+  /** 服务端为本次请求识别出的管理员 IP。 */
+  detected_client_ip?: string
 }
 
 export interface UpdateIPAccessControlPayload {

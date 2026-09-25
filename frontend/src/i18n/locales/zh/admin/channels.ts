@@ -270,7 +270,9 @@ export default {
         ipv6Hint: '开启后公网 IPv6 用户无法注册，调用 API 网关返回 403（面板登录不受影响）。',
         ipv6MessagePlaceholder: '留空使用默认提示语',
         ipv6Note: '仅拦截公网 IPv6；本机回环、链路本地与内网 ULA 地址不受影响。',
-        selfLockConfirm: '警告：当前管理员 IP 命中了这份黑名单，保存后你自己也会被拦截。确定强制保存吗？'
+        selfLockConfirm: '警告：当前管理员 IP 命中了这份黑名单，保存后你自己也会被拦截。确定强制保存吗？',
+        spoofWarningTitle: '客户端 IP 可被伪造，黑名单与 IPv6 拦截可能拦不住',
+        spoofWarning: '当前按请求头（CF-Connecting-IP / X-Real-IP / X-Forwarded-For）识别客户端 IP。服务直接对外、或反向代理没有覆盖这些请求头时，任何人都能伪造 IP 绕过这里的拦截。部署在反向代理后面时请先配置 SERVER_TRUSTED_PROXIES，再到「系统设置」关闭「信任反代传递的客户端 IP」。本次识别到的你的 IP：{ip}'
       },
       records: '审核记录',
       recordsHint: '展示命中、拦截、异常和已采样记录。',

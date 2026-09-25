@@ -50,6 +50,14 @@ func requestUsesLegacyForwardedIPTrust(c *gin.Context) bool {
 	return !ok || settings.trustForwarded
 }
 
+// ForwardedHeadersTrusted reports whether this request resolves its client IP
+// from raw forwarding headers (the legacy compatibility mode). That mode
+// overrides server.trusted_proxies, so on a directly reachable deployment any
+// client can pick the address that IP-based controls see.
+func ForwardedHeadersTrusted(c *gin.Context) bool {
+	return requestUsesLegacyForwardedIPTrust(c)
+}
+
 // GetClientIP resolves the client address using the legacy forwarding-header
 // precedence used before the trusted-proxy hardening. It remains the
 // compatibility path for request metadata and usage/error logs; security-

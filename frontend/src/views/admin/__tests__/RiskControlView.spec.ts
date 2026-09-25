@@ -459,6 +459,37 @@ describe('admin RiskControlView', () => {
     expect(showError).not.toHaveBeenCalled()
   })
 
+  it('warns that the IP rules can be bypassed when the client IP comes from forwarding headers', async () => {
+    const stubs = { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true }
+    getIPAccessControl.mockResolvedValue({
+      ip_blacklist_enabled: true,
+      ip_blacklist: ['1.2.3.4'],
+      ip_blacklist_message: '',
+      ipv6_block_enabled: true,
+      ipv6_block_message: '',
+      client_ip_spoofable: true,
+      detected_client_ip: '203.0.113.9',
+    })
+    const warned = mount(RiskControlView, { global: { stubs } })
+    await flushPromises()
+    expect(warned.get('[data-test="ip-access-spoof-warning"]').text()).toContain('admin.riskControl.ipAccess.spoofWarningTitle')
+    // The form itself still renders next to the warning.
+    expect(warned.find('[data-test="ip-blacklist-input"]').exists()).toBe(true)
+
+    getIPAccessControl.mockResolvedValue({
+      ip_blacklist_enabled: false,
+      ip_blacklist: [],
+      ip_blacklist_message: '',
+      ipv6_block_enabled: false,
+      ipv6_block_message: '',
+      client_ip_spoofable: false,
+      detected_client_ip: '198.51.100.1',
+    })
+    const trusted = mount(RiskControlView, { global: { stubs } })
+    await flushPromises()
+    expect(trusted.find('[data-test="ip-access-spoof-warning"]').exists()).toBe(false)
+  })
+
   it('describes worker runtime as async audit and pre-block record processing', async () => {
     getStatus.mockResolvedValue({
       ...runtimeStatus(),
