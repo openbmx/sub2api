@@ -95,6 +95,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 
 const props = defineProps<{
@@ -148,11 +149,18 @@ const operationHint = computed(() => {
   }
 })
 
+// 同一次提交的重试复用同一个幂等键：请求在前端超时后，后端可能已经逐个加完了余额，
+// 带着原键重试时后端回放那次结果而不是再加一遍。任何输入变化都算新的提交，换新键。
+let operationKey = ''
+const newOperationKey = () =>
+  `user-batch-balance-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+
 const reset = () => {
   operation.value = 'set'
   amountValue.value = ''
   notes.value = ''
   submitting.value = false
+  operationKey = ''
 }
 
 watch(
@@ -161,6 +169,10 @@ watch(
     if (show) reset()
   }
 )
+
+watch([operation, amountValue, notes, () => props.selectedIds.join(',')], () => {
+  operationKey = ''
+})
 
 const handleSubmit = async () => {
   if (!canSubmit.value || parsedAmount.value === null) return
@@ -181,13 +193,18 @@ const handleSubmit = async () => {
   if (!confirmed) return
 
   submitting.value = true
+  if (!operationKey) operationKey = newOperationKey()
   try {
-    const result = await adminAPI.users.batchUpdateBalance({
-      user_ids: [...props.selectedIds],
-      balance: parsedAmount.value,
-      operation: operation.value,
-      notes: notes.value.trim()
-    })
+    const result = await adminAPI.users.batchUpdateBalance(
+      {
+        user_ids: [...props.selectedIds],
+        balance: parsedAmount.value,
+        operation: operation.value,
+        notes: notes.value.trim()
+      },
+      operationKey
+    )
+    operationKey = ''
     const skipped = result.skipped?.length ?? 0
     if (skipped > 0) {
       appStore.showError(
@@ -198,12 +215,9 @@ const handleSubmit = async () => {
     }
     emit('success', result.affected)
     emit('close')
-  } catch (error: any) {
-    appStore.showError(
-      error.response?.data?.message ||
-        error.response?.data?.detail ||
-        t('admin.users.bulkBalance.failed')
-    )
+  } catch (error: unknown) {
+    // apiClient 拒绝时给的是 { status, code, message }，没有 response 字段。
+    appStore.showError(extractApiErrorMessage(error, t('admin.users.bulkBalance.failed')))
   } finally {
     submitting.value = false
   }

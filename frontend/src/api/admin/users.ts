@@ -245,14 +245,27 @@ export async function batchDelete(userIds: number[]): Promise<BatchUserOperation
   return data
 }
 
-/** Batch adjust user balances. operation=set overwrites the balance to the given value. */
+/**
+ * Batch adjust user balances. operation=set overwrites the balance to the given value.
+ *
+ * Pass the same idempotencyKey when retrying the same submission: users are
+ * credited one by one, so a request that timed out on the client may already
+ * have run, and the key lets the server replay that result instead of adding
+ * the amount a second time.
+ */
 export async function batchUpdateBalance(
-  request: BatchUpdateUserBalanceRequest
+  request: BatchUpdateUserBalanceRequest,
+  idempotencyKey?: string
 ): Promise<BatchUserOperationResult> {
-  const { data } = await apiClient.post<BatchUserOperationResult>('/admin/users/batch-balance', {
-    notes: '',
-    ...request
-  })
+  const { data } = await apiClient.post<BatchUserOperationResult>(
+    '/admin/users/batch-balance',
+    { notes: '', ...request },
+    {
+      // Up to 500 users are updated serially; the 30s default is too tight.
+      timeout: 120000,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {})
+    }
+  )
   return data
 }
 

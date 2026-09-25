@@ -843,6 +843,7 @@ import { useAppStore } from '@/stores/app'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useTableSelection } from '@/composables/useTableSelection'
 import { formatDateTime } from '@/utils/format'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
@@ -1762,12 +1763,9 @@ const confirmBulkAction = async () => {
     bulkActionType.value = null
     clearSelection()
     await loadUsers()
-  } catch (error: any) {
-    appStore.showError(
-      error.response?.data?.message ||
-        error.response?.data?.detail ||
-        t('admin.users.bulkActionFailed')
-    )
+  } catch (error: unknown) {
+    // apiClient 拒绝时给的是 { status, code, message }，没有 response 字段。
+    appStore.showError(extractApiErrorMessage(error, t('admin.users.bulkActionFailed')))
   } finally {
     bulkActionSubmitting.value = false
   }
