@@ -1034,6 +1034,9 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 		if groupMultiplier < 0 {
 			groupMultiplier = 0
 		}
+		// 分组模型级倍率：与同步生图路径一致叠乘在分组倍率上，让快照里的
+		// GroupRateMultiplier 就是本批实际生效的分组侧倍率。未配置时为 1.0。
+		groupMultiplier *= group.ModelMultiplierFor(req.Model)
 		discountMultiplier = group.BatchImageDiscountMultiplier
 		if discountMultiplier < 0 {
 			discountMultiplier = 0

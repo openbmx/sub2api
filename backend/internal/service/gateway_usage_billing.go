@@ -776,6 +776,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		pricingAt = timezone.Now()
 	}
 	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, multiplier, pricingAt)
+	// 联网搜索与音频按次、按时长计费，没有模型维度，不叠模型级倍率（迁移 221 的约定，
+	// OpenAI 路径用 baseMultiplier 实现了同一条）。留一份叠乘前的倍率给它们。
+	capabilityMultiplier := multiplier
 	// 模型级倍率按最终计费模型查表，叠乘在高峰因子之后。与高峰不同的是它对 token 与
 	// 图片按次两条支路一视同仁——按模型配的倍率若对生图不生效会很反直觉。
 	// 未配置/查无命中时 ModelMultiplierFor 返回 1.0，此处为无操作。
@@ -796,7 +799,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	// 计算费用
-	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, pricingAt)
+	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, pricingAt, capabilityMultiplier)
 	// response_model：按上游成功响应自报的模型计费（渠道显式开启才生效）。
 	// 采纳条件见 responseModelBillingDeclaration + hasIdentifiedResponseModelPricing
 	// + responseModelBillingAdoptable。任一条件不满足都静默回落基线，即开启本模式前的
@@ -808,7 +811,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		result.ImageCount > 0 || result.AudioUsage != nil || result.SearchCount > 0,
 	); responseModel != "" && !strings.EqualFold(responseModel, strings.TrimSpace(billingModel)) {
 		if identified, responseChannelPriced := s.hasIdentifiedResponseModelPricing(ctx, responseModel, apiKey); identified {
-			responseCost := s.calculateRecordUsageCost(ctx, result, apiKey, responseModel, multiplier, imageMultiplier, pricingAt)
+			responseCost := s.calculateRecordUsageCost(ctx, result, apiKey, responseModel, multiplier, imageMultiplier, pricingAt, capabilityMultiplier)
 			baselineChannelPriced := s.resolveChannelPricing(ctx, billingModel, apiKey) != nil
 			if responseModelBillingAdoptable(cost, responseCost, baselineChannelPriced, responseChannelPriced) {
 				// billingModel 到此为止只是定价查表的入参，后续流程只消费 cost，
@@ -890,6 +893,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 }
 
 // calculateRecordUsageCost 根据请求类型计算费用。
+//
+// capabilityMultiplier（可选）供联网搜索与音频使用：它们没有模型维度，不叠模型级
+// 倍率。做成可变参数是为了不改签名——上游测试直接调用本函数，未传时沿用 multiplier，
+// 行为与改动前一致。
 func (s *GatewayService) calculateRecordUsageCost(
 	ctx context.Context,
 	result *ForwardResult,
@@ -898,7 +905,12 @@ func (s *GatewayService) calculateRecordUsageCost(
 	multiplier float64,
 	imageMultiplier float64,
 	pricingAt time.Time,
+	capabilityMultiplier ...float64,
 ) *CostBreakdown {
+	capability := multiplier
+	if len(capabilityMultiplier) > 0 {
+		capability = capabilityMultiplier[0]
+	}
 	// 图片生成：渠道定价为 token 计费时走 token 路径，否则走图片计费
 	if result.ImageCount > 0 {
 		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
@@ -915,7 +927,7 @@ func (s *GatewayService) calculateRecordUsageCost(
 			cost, err := s.billingService.CalculateCostUnified(CostInput{
 				Ctx: ctx, Model: billingModel, GroupID: &gid, Group: apiKey.Group,
 				UsageUnits: result.AudioUsage.DurationOrUnits, SizeTier: result.AudioUsage.Mode,
-				RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
+				RateMultiplier: capability, Resolver: s.resolver, Resolved: resolved,
 				ReasoningEffort: optionalStringValue(result.ReasoningEffort),
 			})
 			if err == nil {
@@ -923,7 +935,7 @@ func (s *GatewayService) calculateRecordUsageCost(
 			}
 		}
 		cfg := groupAudioPriceConfigFromAPIKey(apiKey)
-		return s.billingService.CalculateAudioCost(result.AudioUsage.Mode, result.AudioUsage.DurationOrUnits, cfg, multiplier)
+		return s.billingService.CalculateAudioCost(result.AudioUsage.Mode, result.AudioUsage.DurationOrUnits, cfg, capability)
 	}
 
 	// Token 计费；SearchCount 为叠加 surcharge（不替代 token）。
@@ -933,7 +945,7 @@ func (s *GatewayService) calculateRecordUsageCost(
 		if price != nil && *price == 0 {
 			logger.LegacyPrintf("service.gateway", "[Billing] search_price_per_1k explicit 0; search free group_model=%s count=%d", billingModel, result.SearchCount)
 		}
-		searchCost := s.billingService.CalculateSearchCost(result.SearchCount, price, multiplier)
+		searchCost := s.billingService.CalculateSearchCost(result.SearchCount, price, capability)
 		if searchCost != nil && (searchCost.TotalCost > 0 || searchCost.ActualCost > 0) {
 			if tokenCost == nil {
 				return searchCost
