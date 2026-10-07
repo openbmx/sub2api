@@ -10,11 +10,13 @@
 
 Report them privately through GitHub's private vulnerability reporting:
 
-**[Report a vulnerability](https://github.com/Wei-Shaw/sub2api/security/advisories/new)**
+**[Report a vulnerability](https://github.com/openbmx/sub2api/security/advisories/new)**
 
 (Repository → **Security** tab → **Report a vulnerability**.) Only the maintainers can see the report, and the advisory becomes the place to discuss, fix, and eventually publish the issue.
 
-If you cannot use GitHub private vulnerability reporting, email **dev@sub2api.org** instead, with `[Security]` in the subject line.
+This repository is a fork of [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) and shares most of its code. If the issue also reproduces on upstream, please report it there as well — through upstream's [private vulnerability reporting](https://github.com/Wei-Shaw/sub2api/security/advisories/new) or **dev@sub2api.org** with `[Security]` in the subject line — so it can be fixed at the source.
+
+If you cannot use GitHub private vulnerability reporting, open a public issue asking for a private contact channel, without including any vulnerability details.
 
 A useful report includes:
 
@@ -62,11 +64,13 @@ Please keep details private until the advisory is published. This is a volunteer
 
 请使用 GitHub 私密漏洞报告功能提交：
 
-**[提交漏洞报告](https://github.com/Wei-Shaw/sub2api/security/advisories/new)**
+**[提交漏洞报告](https://github.com/openbmx/sub2api/security/advisories/new)**
 
 （仓库 → **Security** 标签页 → **Report a vulnerability**。）报告仅维护者可见，后续的讨论、修复与公告发布都在该安全公告中进行。
 
-如果无法使用 GitHub 私密漏洞报告，也可以发送邮件至 **dev@sub2api.org**，邮件标题请注明 `[Security]`。
+本仓库是 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 的分支，大部分代码与上游相同。如果问题在上游同样可以复现，请同时向上游报告（上游的[私密漏洞报告](https://github.com/Wei-Shaw/sub2api/security/advisories/new)，或发送邮件至 **dev@sub2api.org**，标题注明 `[Security]`），以便从源头修复。
+
+如果无法使用 GitHub 私密漏洞报告，可以先提一个公开 Issue 请求私下的联系方式，但请勿在其中透露任何漏洞细节。
 
 报告中建议包含：
 
