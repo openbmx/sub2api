@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -26,13 +27,26 @@ import (
 var oneofPlatformTagPattern = regexp.MustCompile(`oneof=([a-z_ ]+)"`)
 
 // concretePlatforms is every platform an account can actually be created on.
+//
+// It is upstream's canonical list rather than a copy: a hand-written list here
+// went blind to TypeSafe when upstream added it (v0.2.12) and kept passing.
+// Reading the source of truth means a new platform is checked by default and
+// only an explicit exclusion — like monitorProviderPlatforms — can skip it.
 func concretePlatforms() []string {
-	return []string{
-		service.PlatformAnthropic, service.PlatformOpenAI, service.PlatformGemini,
-		service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi,
-		service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax,
-		service.PlatformOpenCodeGo,
+	return model.AllPlatforms()
+}
+
+// monitorProviderPlatforms is the subset channel monitors accept. TypeSafe is a
+// non-chat evaluator that upstream deliberately keeps out of channel monitoring
+// (migrations/241_add_typesafe_platform.sql), so its absence there is correct.
+func monitorProviderPlatforms() []string {
+	var providers []string
+	for _, platform := range concretePlatforms() {
+		if platform != service.PlatformTypeSafe {
+			providers = append(providers, platform)
+		}
 	}
+	return providers
 }
 
 func TestGroupPlatformBindingTagsCoverEveryConcretePlatform(t *testing.T) {
@@ -45,8 +59,8 @@ func TestGroupPlatformBindingTagsCoverEveryConcretePlatform(t *testing.T) {
 
 func TestChannelMonitorProviderBindingTagsCoverEveryConcretePlatform(t *testing.T) {
 	source := readRepoFile(t, "internal", "handler", "admin", "channel_monitor_handler.go")
-	// Monitors have no composite provider, so the concrete list is the whole set.
-	assertOneofCoversPlatforms(t, source, "provider\"", concretePlatforms())
+	// Monitors have no composite provider and exclude TypeSafe by design.
+	assertOneofCoversPlatforms(t, source, "provider\"", monitorProviderPlatforms())
 }
 
 // The ent enum is a second, independent copy of the monitor provider list. A
@@ -54,7 +68,7 @@ func TestChannelMonitorProviderBindingTagsCoverEveryConcretePlatform(t *testing.
 func TestChannelMonitorEntEnumsCoverEveryConcretePlatform(t *testing.T) {
 	for _, schema := range []string{"channel_monitor.go", "channel_monitor_request_template.go"} {
 		source := readRepoFile(t, "ent", "schema", schema)
-		for _, platform := range concretePlatforms() {
+		for _, platform := range monitorProviderPlatforms() {
 			require.Contains(t, source, `"`+platform+`"`,
 				"%s ent enum is missing %q", schema, platform)
 		}

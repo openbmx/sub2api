@@ -592,7 +592,10 @@ go generate ./cmd/server
 简易模式适合个人开发者或内部团队快速使用，不依赖完整 SaaS 功能。
 
 - 启用方式：设置环境变量 `RUN_MODE=simple`
+- 默认每次启动会补齐默认分组。设置 `SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS=false`（或 YAML `simple_mode.auto_create_default_groups: false`）可自行管理分组。默认值为 `true`；关闭后不删除已有分组，不改变运行时自动绑定或管理员并发设置。
 - 功能差异：隐藏 SaaS 相关功能，跳过计费流程
+- 可选密钥窗口：设置 `SIMPLE_MODE_KEY_RATE_LIMIT_ENABLED=true` 后，按每个 API Key 配置的 5 小时、1 天、7 天消费窗口进行限制，默认值为 `false`；启用后仍跳过余额和订阅扣费。
+- 窗口限制以数据库为准，只记录 API Key 窗口用量。它在请求完成后记账，并发中的请求可能以各自最终费用超过窗口上限。启用前的历史用量不会自动补算。
 - 安全注意事项：生产环境需同时设置 `SIMPLE_MODE_CONFIRM=true` 才允许启动
 
 ---
@@ -688,6 +691,31 @@ xAI 的配额是被动采集的。Sub2API 不会凭空构造订阅配额数值�
 新的 Grok 图像与视频生成请求会走一套媒体专用的准入校验。API Key 账号始终具备资格；OAuth 账号则需要 xAI 计费探测给出明确的付费权益证据——Free、被拒、缺失、格式异常和结论不明确的计费观测结果，都会被排除在新的媒体生成之外。尚未探测过的 OAuth 账号会在第一个媒体请求转发前先行探测，导入账号时也会主动执行「计费优先」的配额探测。聊天请求和视频状态查询不受该媒体隔离影响。若没有任何具备资格的账号，媒体端点返回 HTTP `503`，错误类型为 `grok_media_no_eligible_account`。
 
 管理员可通过账号创建/更新接口覆盖自动媒体准入：把 `extra.grok_media_eligible` 设为 `false` 表示排除，设为 `true` 表示强制具备资格。更新时设为 `null` 可移除覆盖、回到基于探测的自动行为；不传该字段则保持当前覆盖不变。仅有周度额度周期不会被视为付费层级信号。成功的图像响应必须至少包含一个真实的图像输出；空的 HTTP `200` 响应会触发账号故障转移，而不会被计费并作为成功生成返回。
+
+---
+
+## TypeSafe / Jev 使用说明
+
+Sub2API 支持使用 TypeSafe API Key 账户，通过 Jev 原生、非流式的 System One 协议调用模型。
+
+- 平台：`typesafe`；账号类型：API Key
+- 默认上游：`https://api.typesafe.ai`
+- 对外端点：`POST /v1/systemone`
+- 模型：`jev-latest`，TypeSafe 分组的 `/v1/models` 也会返回该模型
+- 问题类型：`noul`、`choice`、`score`
+
+请求和成功响应保持 System One 原生 JSON 结构。该端点不兼容 Chat Completions、Responses、Anthropic Messages 或流式客户端。
+
+问题校验遵循 TypeSafe OpenAPI 的线上协议 schema（SDK v0.5.7 也使用该 schema）。所有问题的 `instructions` 都可以省略或为 `null`。Noul 的 `criteria` 可以省略或为 `null`，其中 `true`/`false` 的描述和 Choice 描述支持字符串、对象、数组或 `null`。Score 的 `criteria` 必须是至少包含一档描述的数组，每档支持字符串、对象或数组；单档也合法。SDK 的整数键 Score 映射会由 SDK 在发送前转换为数组。
+
+```bash
+curl https://your-sub2api.example.com/v1/systemone \
+  -H 'Authorization: Bearer sk-your-sub2api-key' \
+  -H 'Content-Type: application/json' \
+  --data '{"model":"jev-latest","state":"待评估文本","questions":{"safety":{"type":"noul","instructions":"评估文本是否不安全"}}}'
+```
+
+`jev-latest` 内置价格为输入 `$0.042/百万 tokens`、输出 `$0`，渠道定价可以覆盖。凭据、欠费、权限、限流、过载、服务端和网络错误（`401`、`402`、`403`、`429`、`529`、`5xx`、传输错误）沿用现有账号错误策略（含自定义错误码与临时不可调度规则）并切换账号；请求错误（`400`、`413`、`422`）不会切换账号重试，也不会改变账号状态。TypeSafe 分组（以及路由到 TypeSafe 的 Composite 请求）调用 Messages、Chat Completions、Responses、count_tokens 时返回 `404`。
 
 ---
 
