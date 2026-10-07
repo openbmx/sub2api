@@ -63,9 +63,11 @@ random_hex() {
 }
 
 # Values shipped in .env.example that must not survive into a real deployment.
+# admin@sub2api.local was the shipped ADMIN_EMAIL until upstream v0.2.14; it is
+# the first login brute-force scanners try, so an old .env must not keep it.
 is_placeholder() {
   case "$1" in
-    ""|change_this_secure_password|your_password_here|changeme) return 0 ;;
+    ""|change_this_secure_password|your_password_here|changeme|admin@sub2api.local) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -103,9 +105,10 @@ chmod 600 .env 2>/dev/null || true
 
 # postgres_initialized — whether this stack's database already exists. Postgres
 # reads POSTGRES_PASSWORD only when it first creates the database, and the
-# backend reads ADMIN_PASSWORD only when it first creates the admin, so neither
-# may be (re)generated for an existing stack: a new POSTGRES_PASSWORD locks
-# sub2api out of its own database, and a new ADMIN_PASSWORD is never applied.
+# backend reads ADMIN_EMAIL / ADMIN_PASSWORD only when it first creates the
+# admin, so none may be (re)generated for an existing stack: a new
+# POSTGRES_PASSWORD locks sub2api out of its own database, and new admin
+# credentials are never applied.
 postgres_initialized() {
   if ${USE_LOCAL_DIRS}; then
     [[ -d postgres_data && -n "$(ls -A postgres_data 2>/dev/null)" ]]
@@ -137,6 +140,10 @@ set_if_blank JWT_SECRET "$(random_hex 32)"
 # tokens without a fixed key (they would not survive a restart).
 set_if_blank TOTP_ENCRYPTION_KEY "$(random_hex 32)"
 if ! ${DATABASE_EXISTS}; then
+  # The admin email is the login username. Left blank, the backend picks a
+  # random one but prints it only to the container log; generating it here (the
+  # same shape as docker-deploy.sh) lets the report below show it.
+  set_if_blank ADMIN_EMAIL "admin-$(random_hex 6)@sub2api.local"
   set_if_blank ADMIN_PASSWORD "$(random_hex 12)"
 fi
 
@@ -178,7 +185,13 @@ fi
 PORT="$(current_value SERVER_PORT)"; PORT="${PORT:-8080}"
 echo
 echo "Sub2API is starting on http://localhost:${PORT}"
-echo "  admin email:    $(current_value ADMIN_EMAIL)"
+ADMIN_EMAIL_VALUE="$(current_value ADMIN_EMAIL)"
+if [[ -n "${ADMIN_EMAIL_VALUE}" ]]; then
+  echo "  admin email:    ${ADMIN_EMAIL_VALUE}"
+else
+  # Only an existing stack gets here: the admin was created on its first boot.
+  echo "  admin email:    (unchanged — the one set when this stack was first created)"
+fi
 # ${arr[*]-}: an empty array is "unbound" under set -u in bash 3.2 (macOS).
 if [[ " ${GENERATED[*]-} " == *" ADMIN_PASSWORD "* ]]; then
   echo "  admin password: $(current_value ADMIN_PASSWORD)"

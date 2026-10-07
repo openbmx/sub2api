@@ -64,9 +64,10 @@ function Invoke-NativeQuietly {
 }
 
 # Postgres reads POSTGRES_PASSWORD only when it first creates the database, and
-# the backend reads ADMIN_PASSWORD only when it first creates the admin, so
-# neither may be (re)generated for an existing stack: a new POSTGRES_PASSWORD
-# locks sub2api out of its own database, and a new ADMIN_PASSWORD never applies.
+# the backend reads ADMIN_EMAIL / ADMIN_PASSWORD only when it first creates the
+# admin, so none may be (re)generated for an existing stack: a new
+# POSTGRES_PASSWORD locks sub2api out of its own database, and new admin
+# credentials never apply.
 function Test-PostgresInitialized {
     if ($LocalDirs) {
         return (Test-Path postgres_data) -and (@(Get-ChildItem -Force -LiteralPath postgres_data -ErrorAction SilentlyContinue).Count -gt 0)
@@ -82,7 +83,9 @@ function Test-PostgresInitialized {
 }
 
 # Values shipped in .env.example that must not survive into a real deployment.
-$placeholders = @('', 'change_this_secure_password', 'your_password_here', 'changeme')
+# admin@sub2api.local was the shipped ADMIN_EMAIL until upstream v0.2.14; it is
+# the first login brute-force scanners try, so an old .env must not keep it.
+$placeholders = @('', 'change_this_secure_password', 'your_password_here', 'changeme', 'admin@sub2api.local')
 
 function Get-EnvValue {
     param([string]$Key)
@@ -135,6 +138,10 @@ Set-EnvIfBlank -Key 'JWT_SECRET'        -Value (New-RandomHex -Bytes 32)
 # tokens without a fixed key (they would not survive a restart).
 Set-EnvIfBlank -Key 'TOTP_ENCRYPTION_KEY' -Value (New-RandomHex -Bytes 32)
 if (-not $databaseExists) {
+    # The admin email is the login username. Left blank, the backend picks a
+    # random one but prints it only to the container log; generating it here
+    # (the same shape as docker-deploy.sh) lets the report below show it.
+    Set-EnvIfBlank -Key 'ADMIN_EMAIL'    -Value ("admin-{0}@sub2api.local" -f (New-RandomHex -Bytes 6))
     Set-EnvIfBlank -Key 'ADMIN_PASSWORD' -Value (New-RandomHex -Bytes 12)
 }
 
@@ -178,7 +185,13 @@ if (-not $port) { $port = '8080' }
 
 Write-Host ""
 Write-Host "Sub2API is starting on http://localhost:$port"
-Write-Host "  admin email:    $(Get-EnvValue -Key 'ADMIN_EMAIL')"
+$adminEmail = Get-EnvValue -Key 'ADMIN_EMAIL'
+if ($adminEmail) {
+    Write-Host "  admin email:    $adminEmail"
+} else {
+    # Only an existing stack gets here: the admin was created on its first boot.
+    Write-Host "  admin email:    (unchanged - the one set when this stack was first created)"
+}
 if ($script:generated -contains 'ADMIN_PASSWORD') {
     Write-Host "  admin password: $(Get-EnvValue -Key 'ADMIN_PASSWORD')"
 } else {

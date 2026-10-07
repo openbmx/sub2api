@@ -28,10 +28,13 @@ It creates `.env` from `.env.example`, generates any missing secrets, builds the
 image from this working tree, and starts the stack. Re-running is safe: existing
 secrets are never regenerated — rotating `TOTP_ENCRYPTION_KEY` would invalidate
 every stored TOTP secret and every saved Prompt Audit endpoint token. When the
-database already exists, `POSTGRES_PASSWORD` and `ADMIN_PASSWORD` are left alone
-even if they still hold the example values: both only take effect when the stack
-is first created, so a new value would lock the app out of its database or be a
-password that was never applied.
+database already exists, `POSTGRES_PASSWORD`, `ADMIN_EMAIL` and `ADMIN_PASSWORD`
+are left alone even if they still hold the example values: they only take
+effect when the stack is first created, so a new value would lock the app out of
+its database or be a credential that was never applied. On a fresh stack the
+admin login is a random `admin-<hex>@sub2api.local` (the old default
+`admin@sub2api.local` is replaced — it is the first name scanners try), and the
+script prints it together with the generated password.
 
 Options: `--local` (host directories instead of named volumes, easier to back up
 and migrate) and `--no-build` (reuse the current image).
