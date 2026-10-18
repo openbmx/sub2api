@@ -25,3 +25,21 @@ func TestShouldSkipOpsClientClosedKeepsSecurityAuditBlocks(t *testing.T) {
 	markSecurityAuditBlock(blocked, securityaudit.Decision{Kind: securityaudit.DecisionBlock})
 	require.False(t, shouldSkipOpsClientClosed(blocked, ops, statusClientClosedRequest), "an audit block answered with 499 must still be logged")
 }
+
+// Upstream v0.2.16 added a request-scoped shortcut at the top of
+// classifyOpsErrorLog that classifies by error type alone. No audit block can
+// carry that marker today, but upstream keeps adding early returns above the
+// fork's reclassification; an audit block must still come out as a request-phase,
+// business-limited refusal whatever else is marked.
+func TestClassifyOpsErrorLogAuditBlockWinsOverRequestScopedShortcut(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	markSecurityAuditBlock(c, securityaudit.Decision{Kind: securityaudit.DecisionBlock})
+	service.MarkOpsRequestScopedError(c, "permission_error")
+	require.True(t, service.IsOpsRequestScopedError(c), "precondition: the shortcut marker is set")
+
+	phase, businessLimited, owner, _ := classifyOpsErrorLog(c, "permission_error", securityaudit.DefaultBlockMessage, "", 403)
+	require.Equal(t, "request", phase)
+	require.True(t, businessLimited, "an audit block must stay out of the SLA error numerator")
+	require.Equal(t, "client", owner)
+}

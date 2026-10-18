@@ -1799,8 +1799,6 @@ const qualityTargetLabel = (target: string) => {
       return 'DeepSeek'
     case 'minimax':
       return 'MiniMax'
-    case 'opencode':
-      return 'OpenCode'
     default:
       return target
   }

@@ -58,3 +58,32 @@ func TestGatewayRecordUsageCostSearchSurchargeSkipsModelFactor(t *testing.T) {
 	legacy := svc.calculateRecordUsageCost(context.Background(), result, apiKey, "unpriced-model", 2.0, 2.0, time.Time{})
 	require.InDelta(t, 2.0, legacy.ActualCost, 1e-9)
 }
+
+// QuoteUsageCost (upstream v0.2.16) prices the Gemini explicit-cache charges that
+// ReserveFixedCharge holds before RecordUsage bills them. It copied the
+// multiplier lookup without the per-model factor, so a group with a model rate
+// reserved one amount and charged another. The quote, the reservation and the
+// charge must all carry the factor — on tokens and cache storage alike, since
+// storage is priced per model.
+func TestQuoteUsageCostAppliesGroupModelRateLikeRecordUsage(t *testing.T) {
+	ctx := context.Background()
+	svc, usageRepo := newGeminiCacheBillingGatewayForTest(t)
+	groupID := int64(35)
+	group := &Group{ID: groupID, Platform: PlatformGemini, RateMultiplier: 2, Hydrated: true}
+	apiKey := &APIKey{ID: 823, GroupID: &groupID, User: &User{ID: 623}, Group: group}
+	tokenHours := GeminiCachedContentStorageTokenHours(1000, 24*time.Hour)
+	input := &RecordUsageInput{
+		Result: &ForwardResult{RequestID: "cc-model-rate", Model: "gemini-2.5-pro", UpstreamModel: "gemini-3.8-flash",
+			Usage: ClaudeUsage{InputTokens: 1000}, CacheStorageTokenHours: tokenHours},
+		APIKey: apiKey, User: apiKey.User, Account: &Account{ID: 714, Platform: PlatformGemini},
+	}
+
+	base := svc.QuoteUsageCost(ctx, input)
+	require.InDelta(t, (1000*0.00000125+tokenHours*0.0000045)*2, base, 1e-12, "precondition: group rate only")
+
+	group.ModelRateMultipliers = map[string]float64{"gemini-2.5-pro": 0.5}
+	quote := svc.QuoteUsageCost(ctx, input)
+	require.InDelta(t, base*0.5, quote, 1e-12, "the quote must carry the model rate of the billing model")
+	require.NoError(t, svc.RecordUsage(ctx, input))
+	require.InDelta(t, quote, usageRepo.lastLog.ActualCost, 1e-12, "what is reserved must be what is charged")
+}

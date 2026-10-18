@@ -63,6 +63,25 @@ func (g *Group) ModelMultiplierFor(model string) float64 {
 	return sanitizeModelRateMultiplier(bestValue)
 }
 
+// applyGroupModelRate 把分组的模型级倍率按最终计费模型叠乘到 token 与图片按次倍率上，
+// 第三个返回值是叠乘前的倍率，留给联网搜索与音频：它们按次、按时长计费，没有模型维度，
+// 不叠模型级倍率（迁移 221 的约定）。
+//
+// billingModel 必须是已经确定的最终计费模型（来源覆盖、composite、无价兜底之后），
+// 所以调用点必须排在计费模型判定之后。RecordUsage 与 QuoteUsageCost 都经这里叠乘，
+// 报价/预留才与实际扣费同口径——上游新增的报价函数照抄了倍率计算却没有这一步。
+func applyGroupModelRate(apiKey *APIKey, billingModel string, multiplier, imageMultiplier float64) (float64, float64, float64) {
+	capability := multiplier
+	if apiKey == nil {
+		return multiplier, imageMultiplier, capability
+	}
+	if modelFactor := apiKey.Group.ModelMultiplierFor(billingModel); modelFactor != 1.0 {
+		multiplier *= modelFactor
+		imageMultiplier *= modelFactor
+	}
+	return multiplier, imageMultiplier, capability
+}
+
 // sanitizeModelRateMultiplier 把非法值降级为 1.0（不叠乘）。
 // 负数按非法处理而非按 0：0 会让计费静默归零，1.0 只是不生效，后者更安全。
 func sanitizeModelRateMultiplier(v float64) float64 {

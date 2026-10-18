@@ -125,6 +125,7 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 		ID:                           41,
 		Name:                         "高级订阅",
 		Description:                  "configuration",
+		I18n:                         GroupI18n{"en": {Name: "Premium", Description: "configuration (en)"}},
 		Platform:                     PlatformOpenAI,
 		RateMultiplier:               1.75,
 		PeakRateEnabled:              true,
@@ -240,6 +241,10 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, duplicateGroupInactiveStatus, duplicate.Status)
 	require.True(t, duplicate.Hydrated, "the duplicate response is reloaded with derived counts")
 	require.Equal(t, source.Description, duplicate.Description)
+	// I18n 列在 groupDuplicateRewrittenFields 里：名称译文刻意丢弃、描述译文保留，
+	// 由这一条断言钉住，而不是由反射审计校验相等。
+	require.Equal(t, GroupI18n{"en": {Description: "configuration (en)"}}, duplicate.I18n,
+		"translated names must be dropped and translated descriptions carried")
 	require.Equal(t, source.Platform, duplicate.Platform)
 	require.Equal(t, source.RateMultiplier, duplicate.RateMultiplier)
 	require.Equal(t, source.PeakRateMultiplier, duplicate.PeakRateMultiplier)
@@ -279,6 +284,9 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	duplicate.ModelRouting["gpt-*"][0] = 999
 	duplicate.VideoModelPrices[VideoPriceFamilyGrokImagineVideo15][VideoBillingResolution720P] = 999
 	duplicate.ModelRateMultipliers["gpt-5.4*"] = 999
+	changedLocale := duplicate.I18n["en"]
+	changedLocale.Description = "changed"
+	duplicate.I18n["en"] = changedLocale
 	duplicate.SupportedModelScopes[0] = "changed"
 	duplicate.MessagesDispatchModelConfig.ExactModelMappings["claude-special"] = "changed"
 	duplicate.ModelAllowlist.Models[0] = "changed"
@@ -293,6 +301,7 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, int64(13), source.ModelRouting["gpt-*"][0])
 	require.Equal(t, 0.14, source.VideoModelPrices[VideoPriceFamilyGrokImagineVideo15][VideoBillingResolution720P])
 	require.Equal(t, 1.3, source.ModelRateMultipliers["gpt-5.4*"])
+	require.Equal(t, "configuration (en)", source.I18n["en"].Description, "the copy must not share the translation map")
 	require.Equal(t, "claude", source.SupportedModelScopes[0])
 	require.Equal(t, "gpt-special", source.MessagesDispatchModelConfig.ExactModelMappings["claude-special"])
 	require.Equal(t, "gpt-5.4", source.ModelAllowlist.Models[0])
@@ -328,6 +337,9 @@ var groupDuplicateRewrittenFields = map[string]struct{}{
 	// 上游 v0.2.1 起刻意重置：manifest 里存的是源分组的账号 ID，副本的账号
 	// 成员关系可能不同，照抄会让副本指向不属于它的账号。
 	"CodexModelsManifestConfig": {},
+	// 上游 v0.2.15 起刻意改写：名称译文不带走（副本已改名，沿用会让两个分组在
+	// 该语言下同名），只保留描述译文（cloneGroupI18nForDuplicate）。
+	"I18n": {},
 }
 
 // requireGroupDuplicateCarriesEveryConfigurationField walks Group reflectively
