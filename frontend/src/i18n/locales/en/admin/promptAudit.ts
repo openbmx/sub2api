@@ -90,7 +90,7 @@ export default {
       blockStatusRetryWarning: '429 and 408 mean "try again later" in HTTP, so a compliant client will re-send the request that was just rejected. Use 403 if the goal is to stop retries.',
       blockMessage: 'Block message', blockMessageHint: 'Text returned to the client. The matched risk categories and the request ID are appended automatically; the audit model\'s own reason is never returned, since it tells an attacker how to reword around the filter.',
       previewTitle: 'Prompt preview',
-      previewDesc: 'Run one audit against real text to see the verdict and the raw reply. Preview writes no audit event and does not affect live traffic.',
+      previewDesc: 'Run one audit against real text to see the verdict and the raw reply. Preview writes no audit event and does not affect live traffic. The model, response format and token come from the saved node; only the audit prompt and thresholds follow the current draft.',
       previewNoEndpoint: 'Add and save at least one audit node first. Preview only runs against saved nodes.',
       previewEndpoint: 'Audit node',
       previewContent: 'Text to audit',

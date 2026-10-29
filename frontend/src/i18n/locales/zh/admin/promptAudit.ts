@@ -90,7 +90,7 @@ export default {
       blockStatusRetryWarning: '429 / 408 在 HTTP 语义中表示「稍后重试」，遵循规范的客户端会自动重发这条刚被拒绝的请求。若目的是阻止重试，建议使用 403。',
       blockMessage: '拦截提示文案', blockMessageHint: '返回给客户端的说明文字。系统会自动附上命中的风险类别与请求 ID，但不会回传审核模型的判定理由——那等于告诉攻击者如何改写以绕过。',
       previewTitle: '提示词试审',
-      previewDesc: '用真实内容调一次审计模型，查看判定结果与原始返回。试审不会写入审计事件，也不影响线上流量。',
+      previewDesc: '用真实内容调一次审计模型，查看判定结果与原始返回。试审不会写入审计事件，也不影响线上流量。模型、返回格式和 Token 取自已保存的节点，只有审计提示词与阈值使用当前草稿。',
       previewNoEndpoint: '请先添加并保存至少一个审计节点。试审只能使用已保存的节点。',
       previewEndpoint: '审计节点',
       previewContent: '待审内容',

@@ -232,6 +232,8 @@ describe('Prompt Audit components', () => {
     expect(wrapper.text()).toContain('越狱尝试')
     expect(wrapper.text()).toContain('0.93')
     expect(wrapper.text()).toContain('820')
+    // Preview runs the saved node, which may differ from unsaved pool edits.
+    expect(wrapper.get('[data-test="preview-ran-with"]').text()).toBe('guard-model · admin.promptAudit.pool.responseFormats.custom_json')
   })
 
   // A rejected call is the common failure when tuning against a self-hosted

@@ -19,6 +19,11 @@ type GuardEvaluator struct {
 	nodeMu       sync.Mutex
 	nodes        map[string]chan struct{}
 	blockCache   *blockVerdictCache
+
+	// inflight maps a cache key to the evaluation currently auditing that
+	// prompt. See claimPrompt.
+	inflightMu sync.Mutex
+	inflight   map[string]chan struct{}
 }
 
 func NewGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metrics) *GuardEvaluator {
@@ -35,7 +40,57 @@ func newGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metric
 	clock := realClock{}
 	return &GuardEvaluator{scanner: scanner, repo: repo, metrics: metrics, clock: clock,
 		global: make(chan struct{}, globalLimit), perNodeLimit: perNodeLimit, nodes: map[string]chan struct{}{},
-		blockCache: newBlockVerdictCache(DefaultBlockVerdictTTL, maxBlockVerdictEntries, clock)}
+		blockCache: newBlockVerdictCache(DefaultBlockVerdictTTL, maxBlockVerdictEntries, clock),
+		inflight:   map[string]chan struct{}{}}
+}
+
+// claimPrompt makes concurrent evaluations of one prompt share a single audit.
+//
+// The block cache only makes a rejection stick once it is stored. Identical
+// requests sent in parallel all missed it and each got a fresh roll of a
+// nondeterministic model, so a burst of retries still walked through. Now the
+// first caller audits and the rest wait for it: if it stored a verdict they
+// replay that, and if it failed (unavailable and invalid are never cached)
+// they evaluate on their own rather than queueing behind one another, so an
+// outage does not multiply their latency.
+//
+// It returns a cached verdict (hit), or a release func the caller must run when
+// its evaluation ends. err is set only if ctx ended while waiting.
+func (g *GuardEvaluator) claimPrompt(ctx context.Context, cfg ActiveConfig, promptHash string) (release func(), cached NormalizedResult, kind DecisionKind, hit bool, err error) {
+	noop := func() {}
+	if result, k, ok := g.blockCache.get(cfg.ConfigVersion, promptHash); ok {
+		return noop, result, k, true, nil
+	}
+	key := blockVerdictKey(cfg.ConfigVersion, promptHash)
+	if key == "" {
+		return noop, NormalizedResult{}, "", false, nil
+	}
+	g.inflightMu.Lock()
+	if g.inflight == nil {
+		g.inflight = map[string]chan struct{}{}
+	}
+	wait, busy := g.inflight[key]
+	if !busy {
+		done := make(chan struct{})
+		g.inflight[key] = done
+		g.inflightMu.Unlock()
+		return func() {
+			g.inflightMu.Lock()
+			delete(g.inflight, key)
+			g.inflightMu.Unlock()
+			close(done)
+		}, NormalizedResult{}, "", false, nil
+	}
+	g.inflightMu.Unlock()
+	select {
+	case <-wait:
+	case <-ctx.Done():
+		return noop, NormalizedResult{}, "", false, ctx.Err()
+	}
+	if result, k, ok := g.blockCache.get(cfg.ConfigVersion, promptHash); ok {
+		return noop, result, k, true, nil
+	}
+	return noop, NormalizedResult{}, "", false, nil
 }
 
 func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot) (*PromptDecision, error) {
@@ -59,11 +114,21 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
 	}
 	// Replay a recent rejection of this exact prompt before spending an audit
-	// call on it. This runs ahead of the bulkhead so a retry storm cannot
-	// exhaust the concurrency budget and start failing open.
-	if cached, kind, ok := g.blockCache.get(cfg.ConfigVersion, snapshot.PromptHash); ok {
-		return g.replayCachedVerdict(ctx, cfg, snapshot, baseFields, cached, kind, start), nil
+	// call on it, and let identical prompts in flight share one audit. This
+	// runs ahead of the bulkhead so a retry storm cannot exhaust the
+	// concurrency budget and start failing open.
+	release, cached, cachedKind, hit, waitErr := g.claimPrompt(ctx, cfg, snapshot.PromptHash)
+	if waitErr != nil {
+		if g.metrics != nil {
+			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
+		}
+		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
+		return nil, &GuardError{Code: ErrorCodeUnavailable, Cause: waitErr}
 	}
+	if hit {
+		return g.replayCachedVerdict(ctx, cfg, snapshot, baseFields, cached, cachedKind, start), nil
+	}
+	defer release()
 	select {
 	case g.global <- struct{}{}:
 		defer func() { <-g.global }()

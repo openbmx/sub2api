@@ -61,6 +61,14 @@
             <span class="rounded-md bg-gray-100 px-2 py-1 text-xs tabular-nums text-gray-600 dark:bg-dark-800 dark:text-dark-300">
               {{ result.latency_ms }} ms
             </span>
+            <!-- What actually ran: the saved node, which can differ from unsaved edits in the pool. -->
+            <span
+              v-if="result.model"
+              class="rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-dark-800 dark:text-dark-300"
+              data-test="preview-ran-with"
+            >
+              {{ result.model }} · {{ t(`admin.promptAudit.pool.responseFormats.${result.response_format || 'qwen3guard'}`) }}
+            </span>
             <span v-if="result.http_status" class="rounded-md bg-gray-100 px-2 py-1 text-xs tabular-nums text-gray-600 dark:bg-dark-800 dark:text-dark-300">
               HTTP {{ result.http_status }}
             </span>

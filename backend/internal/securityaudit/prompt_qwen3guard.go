@@ -268,7 +268,7 @@ func (s *OpenAICompatibleScanner) scan(ctx context.Context, endpoint ActiveEndpo
 	if int64(len(responseBody)) > maxGuardResponseBytes {
 		return "", nil, &GuardError{Code: ErrorCodeInvalidResponse}
 	}
-	content, err := extractOpenAIContent(responseBody)
+	reply, err := extractOpenAIReply(responseBody)
 	if err != nil {
 		code := ErrorCodeInvalidResponse
 		if errors.Is(err, errGuardOutputTruncated) {
@@ -276,15 +276,22 @@ func (s *OpenAICompatibleScanner) scan(ctx context.Context, endpoint ActiveEndpo
 		}
 		return "", nil, &GuardError{Code: code, Cause: err}
 	}
+	content := reply.content
 	if customJSON {
 		// The raw reply is returned even on parse failure so the preview tool can
 		// show an administrator exactly what their prompt produced.
 		result, parseErr := ParseCustomJSONVerdict(content, endpoint, enabledScanners)
+		if parseErr == nil && reply.fromReasoning && result.Decision == EventPass {
+			return content, nil, rejectReasoningOnlyPass(reply)
+		}
 		return content, result, parseErr
 	}
 	result, err := ParseQwen3Guard(content, enabledScanners)
 	if err != nil {
 		return content, nil, err
+	}
+	if reply.fromReasoning && result.Decision == EventPass {
+		return content, nil, rejectReasoningOnlyPass(reply)
 	}
 	result.GuardEndpointID = endpoint.ID
 	result.ScannerVersion = endpoint.Model
@@ -292,7 +299,11 @@ func (s *OpenAICompatibleScanner) scan(ctx context.Context, endpoint ActiveEndpo
 }
 
 func (s *OpenAICompatibleScanner) clientFor(endpoint ActiveEndpoint) (*http.Client, error) {
-	key := fmt.Sprintf("%s|%s|%d", endpoint.ID, endpoint.BaseURL, endpoint.TimeoutMS)
+	// The client's redirect policy strips the endpoint's custom headers by the
+	// names captured when it was built, so the names are part of the identity:
+	// otherwise renaming or adding a credential header kept a client that
+	// forwarded the new header to whatever host a redirect pointed at.
+	key := fmt.Sprintf("%s|%s|%d|%s", endpoint.ID, endpoint.BaseURL, endpoint.TimeoutMS, endpointHeaderNamesKey(endpoint.Headers))
 	if cached, ok := s.clients.Load(key); ok {
 		client, valid := cached.(*http.Client)
 		if !valid {
@@ -319,7 +330,40 @@ func (s *OpenAICompatibleScanner) clientFor(endpoint ActiveEndpoint) (*http.Clie
 // instead of a generic invalid-response.
 var errGuardOutputTruncated = errors.New("prompt guard response truncated by max_tokens")
 
+// errReasoningOnlyPass marks a pass that exists only in an unfinished chain of
+// thought. See guardReply.fromReasoning.
+var errReasoningOnlyPass = errors.New("prompt guard pass recovered only from reasoning_content")
+
+// guardReply is the usable text of a guard response and where it came from.
+type guardReply struct {
+	content string
+	// fromReasoning means content was recovered from reasoning_content because
+	// the model never produced a final answer. Such a verdict may only tighten:
+	// the last object in a chain of thought is just as often the output template
+	// being restated ({"confidence": 0.00, ...}) as a conclusion, so a "safe"
+	// read from it would turn an unfinished audit into an allow. A block or flag
+	// read from it is kept — the model got far enough to object.
+	fromReasoning bool
+	// truncated reports finish_reason "length".
+	truncated bool
+}
+
+// rejectReasoningOnlyPass reports a pass recovered from reasoning as the
+// failure it really is, so the configured fail-open/closed policy applies.
+func rejectReasoningOnlyPass(reply guardReply) error {
+	code := ErrorCodeInvalidResponse
+	if reply.truncated {
+		code = ErrorCodeOutputTruncated
+	}
+	return &GuardError{Code: code, Cause: errReasoningOnlyPass}
+}
+
 func extractOpenAIContent(body []byte) (string, error) {
+	reply, err := extractOpenAIReply(body)
+	return reply.content, err
+}
+
+func extractOpenAIReply(body []byte) (guardReply, error) {
 	var response struct {
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
@@ -334,28 +378,27 @@ func extractOpenAIContent(body []byte) (string, error) {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil || len(response.Choices) == 0 {
-		return "", errors.New("prompt guard response envelope invalid")
+		return guardReply{}, errors.New("prompt guard response envelope invalid")
 	}
 	choice := response.Choices[0]
+	truncated := strings.EqualFold(strings.TrimSpace(choice.FinishReason), "length")
 	text, err := openAIContentText(choice.Message.Content)
 	if err == nil {
-		return text, nil
+		return guardReply{content: text, truncated: truncated}, nil
 	}
 	// Content is unusable. A reasoning model that was cut short may still have
 	// stated its verdict mid-thought, so the chain of thought is worth one look —
-	// but only its last JSON object. Earlier ones are the output template being
-	// restated or text quoted from the audited prompt, and handing the whole
-	// reasoning to ParseCustomJSONVerdict (which takes the first object) let a
-	// quoted {"confidence":0.00} pass an unfinished audit.
+	// but only its last JSON object, and the caller accepts it only if it is not
+	// a pass (guardReply.fromReasoning).
 	if reasoning := strings.TrimSpace(choice.Message.ReasoningContent); reasoning != "" {
 		if verdict, ok := extractLastJSONObject(stripCodeFences(reasoning)); ok {
-			return verdict, nil
+			return guardReply{content: verdict, fromReasoning: true, truncated: truncated}, nil
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "length") {
-		return "", errGuardOutputTruncated
+	if truncated {
+		return guardReply{truncated: true}, errGuardOutputTruncated
 	}
-	return "", err
+	return guardReply{}, err
 }
 
 func openAIContentText(content any) (string, error) {

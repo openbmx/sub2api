@@ -202,8 +202,9 @@ func sortedJSONKeys(values map[string]any) []string {
 
 // clientInstructionRoles are roles a client may freely populate. Attackers can
 // place jailbreak/PII text in assistant/tool turns, so blocking audit must scan
-// them too—not only user/system/developer instructions.
-var clientInstructionRoles = []string{"user", "system", "developer", "assistant", "tool"}
+// them too—not only user/system/developer instructions. "function" is the
+// legacy OpenAI tool-result role, still accepted by upstreams.
+var clientInstructionRoles = []string{"user", "system", "developer", "assistant", "tool", "function"}
 
 func extractChatLikeSegments(root map[string]any) []promptSegment {
 	if root == nil {
@@ -313,7 +314,7 @@ func extractResponses(value any) []promptSegment {
 
 func isClientInstructionRole(role string) bool {
 	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "user", "system", "developer", "assistant", "tool", "model":
+	case "user", "system", "developer", "assistant", "tool", "model", "function":
 		return true
 	default:
 		return false
@@ -346,7 +347,7 @@ func extractGemini(value any) []promptSegment {
 				if text := stringValue(object["text"]); text != "" {
 					result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
 				}
-				for _, text := range geminiFunctionTexts(object) {
+				for _, text := range geminiPartTexts(object) {
 					result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
 				}
 			}
@@ -552,7 +553,7 @@ func contentBlockTexts(object map[string]any, depth int) []string {
 		}
 	case "tool_use", "tool_call", "function_call", "custom_tool_call":
 		return toolCallTexts(object)
-	case "tool_result", "tool_output", "function_call_output", "custom_tool_call_output", "local_shell_call_output", "mcp_call_output":
+	case "tool_result", "tool_output", "function_call_output", "custom_tool_call_output", "local_shell_call_output", "mcp_call_output", "mcp_tool_result":
 		return toolResultTexts(object, depth)
 	case "mcp_call":
 		// Responses MCP items carry the call and its result on one item.
@@ -569,8 +570,63 @@ func contentBlockTexts(object map[string]any, depth int) []string {
 			texts = append([]string{title}, texts...)
 		}
 		return texts
+	default:
+		return unknownBlockTexts(object, depth)
 	}
 	return nil
+}
+
+// nonTextBlockTypes are content blocks that carry media, encrypted or opaque
+// data rather than text a guard can judge. They are skipped outright.
+var nonTextBlockTypes = map[string]struct{}{
+	"image": {}, "image_url": {}, "input_image": {}, "output_image": {},
+	"audio": {}, "input_audio": {}, "output_audio": {},
+	"video": {}, "video_url": {}, "file": {}, "input_file": {},
+	"redacted_thinking": {}, "container_upload": {},
+}
+
+// opaqueBlockKeys are fields of an unrecognized block that hold identifiers,
+// signatures or metadata rather than prose.
+var opaqueBlockKeys = map[string]struct{}{
+	"type": {}, "id": {}, "tool_use_id": {}, "call_id": {}, "signature": {},
+	"encrypted_content": {}, "cache_control": {}, "media_type": {}, "mime_type": {}, "status": {},
+}
+
+// unknownBlockTexts collects the string values of a content block type this
+// extractor does not recognize. Whatever is in the block reaches the model and
+// is client controlled; dropping types it did not know let a request whose only
+// text sat in such a block (an MCP result, a newer server-tool block) pass as
+// "no prompt text" even with the audit failing closed. Identifiers, signatures
+// and media/opaque payloads are skipped.
+func unknownBlockTexts(object map[string]any, depth int) []string {
+	if _, skip := nonTextBlockTypes[strings.ToLower(stringValue(object["type"]))]; skip {
+		return nil
+	}
+	return collectBlockStrings(object, depth, nil)
+}
+
+func collectBlockStrings(value any, depth int, texts []string) []string {
+	if depth > maxContentBlockDepth {
+		return texts
+	}
+	switch typed := value.(type) {
+	case string:
+		if text := strings.TrimSpace(typed); text != "" && !looksLikeMediaPayload(text) {
+			texts = append(texts, text)
+		}
+	case []any:
+		for _, item := range typed {
+			texts = collectBlockStrings(item, depth+1, texts)
+		}
+	case map[string]any:
+		for _, key := range sortedJSONKeys(typed) {
+			if _, skip := opaqueBlockKeys[strings.ToLower(key)]; skip {
+				continue
+			}
+			texts = collectBlockStrings(typed[key], depth+1, texts)
+		}
+	}
+	return texts
 }
 
 // documentTexts reads the text an Anthropic document block feeds the model:
@@ -675,23 +731,34 @@ func messageToolCallTexts(value any) []string {
 	return result
 }
 
-// geminiFunctionTexts reads Gemini functionCall / functionResponse parts, whose
-// shape differs from both Anthropic and OpenAI.
-func geminiFunctionTexts(object map[string]any) []string {
+// geminiPartTexts reads the non-text Gemini parts that still reach the model as
+// text: functionCall / functionResponse, whose shape differs from both
+// Anthropic and OpenAI, and the code-execution pair.
+func geminiPartTexts(object map[string]any) []string {
 	result := make([]string, 0, 2)
 	for _, key := range []string{"functionCall", "function_call"} {
-		call, ok := object[key].(map[string]any)
-		if !ok {
-			continue
+		if call, ok := object[key].(map[string]any); ok {
+			result = append(result, toolCallTexts(call)...)
 		}
-		result = append(result, toolCallTexts(call)...)
 	}
 	for _, key := range []string{"functionResponse", "function_response"} {
-		response, ok := object[key].(map[string]any)
-		if !ok {
-			continue
+		if response, ok := object[key].(map[string]any); ok {
+			result = append(result, toolResultTexts(response, 0)...)
 		}
-		result = append(result, toolResultTexts(response, 0)...)
+	}
+	for _, key := range []string{"executableCode", "executable_code"} {
+		if code, ok := object[key].(map[string]any); ok {
+			if text := stringValue(code["code"]); text != "" {
+				result = append(result, text)
+			}
+		}
+	}
+	for _, key := range []string{"codeExecutionResult", "code_execution_result"} {
+		if outcome, ok := object[key].(map[string]any); ok {
+			if text := stringValue(outcome["output"]); text != "" {
+				result = append(result, text)
+			}
+		}
 	}
 	return result
 }
@@ -828,10 +895,16 @@ func trimAssistantContext(segments []promptSegment) []promptSegment {
 	return trimmed
 }
 
+// normalizedPromptSegments trims and drops empty segments. It also strips NUL:
+// the priority separator is built from NUL bytes, so a client that embedded it
+// in prompt text could cut its own prompt into context-free fragments (or into
+// thousands of sequential guard calls), and PostgreSQL TEXT/JSONB reject NUL in
+// the event and job rows built from this text. A NUL carries no meaning a guard
+// needs, so removing it only from the audited copy changes nothing upstream.
 func normalizedPromptSegments(values []promptSegment) []promptSegment {
 	normalized := make([]promptSegment, 0, len(values))
 	for _, value := range values {
-		value.text = strings.TrimSpace(value.text)
+		value.text = strings.TrimSpace(strings.ReplaceAll(value.text, "\x00", ""))
 		if value.text != "" {
 			normalized = append(normalized, value)
 		}
@@ -894,6 +967,9 @@ func systemPromptSegments(texts []string) []promptSegment {
 }
 
 func RedactPreview(value string, maxRunes int) string {
+	// Everything RedactPreview returns is persisted (previews, guard reasons,
+	// scanner evidence), and PostgreSQL rejects NUL in TEXT and JSONB.
+	value = strings.ReplaceAll(value, "\x00", "")
 	value = bearerPattern.ReplaceAllString(value, "Bearer ***")
 	value = apiKeyPattern.ReplaceAllStringFunc(value, func(match string) string {
 		if index := strings.IndexAny(match, ":= \t"); index >= 0 {

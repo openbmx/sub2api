@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"golang.org/x/net/http/httpguts"
 )
 
 const (
@@ -126,9 +128,11 @@ func normalizeCustomHeaders(raw map[string]string) (map[string]string, error) {
 			return nil, infraerrors.BadRequest(ErrorCodeInvalidHeader, "审计节点自定义请求头名称重复："+canonical)
 		}
 		value = strings.TrimSpace(value)
-		// CR, LF and NUL in a value are header injection, not configuration.
-		if strings.ContainsAny(value, "\r\n\x00") {
-			return nil, infraerrors.BadRequest(ErrorCodeInvalidHeader, "审计节点自定义请求头值不能包含换行："+canonical)
+		// CR, LF and NUL are header injection; any other control character is a
+		// value net/http refuses to send, so saving it would fail every audit
+		// call after the fact. Validate with the transport's own rule.
+		if !httpguts.ValidHeaderFieldValue(value) {
+			return nil, infraerrors.BadRequest(ErrorCodeInvalidHeader, "审计节点自定义请求头值不能包含换行或控制字符："+canonical)
 		}
 		if utf8.RuneCountInString(value) > MaxCustomHeaderValueRunes {
 			return nil, infraerrors.BadRequest(ErrorCodeInvalidHeader, "审计节点自定义请求头值过长："+canonical)
@@ -158,7 +162,7 @@ func sanitizeCustomHeaders(raw map[string]string) map[string]string {
 			continue
 		}
 		value = strings.TrimSpace(value)
-		if strings.ContainsAny(value, "\r\n\x00") || utf8.RuneCountInString(value) > MaxCustomHeaderValueRunes {
+		if !httpguts.ValidHeaderFieldValue(value) || utf8.RuneCountInString(value) > MaxCustomHeaderValueRunes {
 			continue
 		}
 		if len(result) >= MaxCustomHeaders {
@@ -167,6 +171,20 @@ func sanitizeCustomHeaders(raw map[string]string) map[string]string {
 		result[canonical] = value
 	}
 	return result
+}
+
+// endpointHeaderNamesKey identifies a custom header set by its names, which is
+// all a client built for the endpoint captures (see clientFor).
+func endpointHeaderNamesKey(headers map[string]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, strings.ToLower(name))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 // isValidHeaderName checks the RFC 7230 token production. http.Header.Set would

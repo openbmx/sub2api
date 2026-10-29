@@ -655,6 +655,16 @@ func (cfg ActiveConfig) EffectiveTurnScanRunes() int {
 	return cfg.TurnScanRunes
 }
 
+// publishedTurnScanRunes is the value the admin UI shows. A stored -1 stays -1,
+// so the form says sampling is off; the effective value 0 is not something the
+// form accepts and hid the setting. Everything else is published as effective.
+func publishedTurnScanRunes(stored int) int {
+	if stored < 0 {
+		return -1
+	}
+	return ActiveConfig{TurnScanRunes: stored}.EffectiveTurnScanRunes()
+}
+
 // EffectiveNodeConcurrency returns the per-node in-flight cap, falling back to
 // the default for configs saved before the field existed.
 func (cfg ActiveConfig) EffectiveNodeConcurrency() int {
@@ -734,7 +744,7 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 		BlockThreshold:            cfg.BlockThreshold, FlagThreshold: cfg.FlagThreshold,
 		BlockHTTPStatus: blockStatus, BlockMessage: blockMessage,
 		NodeConcurrency: ActiveConfig{NodeConcurrency: cfg.NodeConcurrency}.EffectiveNodeConcurrency(),
-		TurnScanRunes:   ActiveConfig{TurnScanRunes: cfg.TurnScanRunes}.EffectiveTurnScanRunes(),
+		TurnScanRunes:   publishedTurnScanRunes(cfg.TurnScanRunes),
 		ConfigVersion:   cfg.ConfigVersion,
 		UpdatedAt:       cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}

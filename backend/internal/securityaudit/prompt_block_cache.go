@@ -111,6 +111,13 @@ func (c *blockVerdictCache) put(configVersion int64, promptHash string, kind Dec
 	now := c.clock.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A live rejection outranks any later verdict for the same prompt. Without
+	// this, a concurrent retry whose roll came back clean overwrote the block
+	// with a pass and replayed that pass for its TTL — exactly the retry bypass
+	// the cache exists to close.
+	if existing, ok := c.entries[key]; ok && existing.kind == DecisionBlock && kind != DecisionBlock && now.Before(existing.expires) {
+		return
+	}
 	if len(c.entries) >= c.max {
 		c.evictLocked(now)
 	}

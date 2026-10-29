@@ -3,6 +3,7 @@ package securityaudit
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -175,17 +176,8 @@ type customVerdict struct {
 // It is deliberately forgiving about envelope and field naming, and strict only
 // about there being a usable verdict at all.
 func ParseCustomJSONVerdict(content string, endpoint ActiveEndpoint, enabledScanners []string) (*NormalizedResult, error) {
-	payload, ok := extractFirstJSONObject(stripCodeFences(content))
-	if !ok {
-		return nil, &GuardError{Code: ErrorCodeInvalidResponse}
-	}
-	var verdict customVerdict
-	if err := json.Unmarshal([]byte(payload), &verdict); err != nil {
-		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
-	}
-
-	blockThreshold, flagThreshold := endpoint.thresholds()
-	risk, confidence, err := resolveRiskAndConfidence(verdict, blockThreshold, flagThreshold)
+	blockThreshold, _ := endpoint.thresholds()
+	verdict, risk, confidence, err := mostSevereCustomVerdict(stripCodeFences(content), endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +249,62 @@ func ParseCustomJSONVerdict(content string, endpoint ActiveEndpoint, enabledScan
 		result.ScannerScores[customJSONPolicyID] = confidence
 	}
 	return result, nil
+}
+
+// maxVerdictObjects bounds how many top-level objects one reply is searched for.
+// A real verdict is one object; the bound only caps work on a pathological reply.
+const maxVerdictObjects = 32
+
+// mostSevereCustomVerdict decodes every top-level JSON object in the reply and
+// keeps the most severe verdict (Unsafe over Controversial over Safe, then the
+// higher confidence).
+//
+// Taking the first object let audited text decide the outcome: a prompt that
+// embeds {"confidence":0.0} and gets the model to echo it ahead of its real
+// verdict was allowed. Any single position (first or last) can be steered that
+// way. Severity cannot: a planted object can only make the reply look safer,
+// so ranking by severity leaves the model's own objection standing, and an
+// attacker who plants an unsafe object only blocks themselves.
+func mostSevereCustomVerdict(content string, endpoint ActiveEndpoint) (customVerdict, string, float64, error) {
+	blockThreshold, flagThreshold := endpoint.thresholds()
+	var (
+		best           customVerdict
+		bestRisk       string
+		bestConfidence float64
+		found          bool
+	)
+	lastErr := error(&GuardError{Code: ErrorCodeInvalidResponse})
+	for _, payload := range extractJSONObjects(content) {
+		var verdict customVerdict
+		if err := json.Unmarshal([]byte(payload), &verdict); err != nil {
+			lastErr = &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+			continue
+		}
+		risk, confidence, err := resolveRiskAndConfidence(verdict, blockThreshold, flagThreshold)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		rank, bestRank := customRiskRank(risk), customRiskRank(bestRisk)
+		if !found || rank > bestRank || (rank == bestRank && confidence > bestConfidence) {
+			best, bestRisk, bestConfidence, found = verdict, risk, confidence, true
+		}
+	}
+	if !found {
+		return customVerdict{}, "", 0, lastErr
+	}
+	return best, bestRisk, bestConfidence, nil
+}
+
+func customRiskRank(risk string) int {
+	switch risk {
+	case "Unsafe":
+		return 2
+	case "Controversial":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // resolveRiskAndConfidence applies a fixed precedence so the same reply always
@@ -363,6 +411,12 @@ func verdictFloat(values ...any) (float64, bool) {
 			}
 			parsed = number
 		default:
+			continue
+		}
+		// strconv accepts "NaN" and "Inf". NaN fails every threshold comparison,
+		// so it used to read as Safe, and then broke the event insert because the
+		// scores map cannot be encoded as JSON. Treat it as no confidence at all.
+		if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
 			continue
 		}
 		if parsed > 1 && parsed <= 100 {
@@ -501,16 +555,33 @@ func extractFirstJSONObject(content string) (string, bool) {
 // {"confidence": 0.00, ...} or a payload the audited prompt planted; the
 // verdict, when one was reached, comes last.
 func extractLastJSONObject(content string) (string, bool) {
-	last, found := "", false
-	for {
-		object, ok := extractFirstJSONObject(content)
-		if !ok {
-			return last, found
-		}
-		last, found = object, true
-		// The object begins at the first '{', so this is its own offset.
-		content = content[strings.Index(content, object)+len(object):]
+	objects := extractJSONObjects(content)
+	if len(objects) == 0 {
+		return "", false
 	}
+	return objects[len(objects)-1], true
+}
+
+// extractJSONObjects returns the balanced top-level objects in content, in
+// order, up to maxVerdictObjects. An opening brace with no match (prose such as
+// "use { for blocks") is skipped rather than ending the scan, so it cannot hide
+// a verdict that follows it.
+func extractJSONObjects(content string) []string {
+	var objects []string
+	for len(objects) < maxVerdictObjects {
+		start := strings.IndexByte(content, '{')
+		if start < 0 {
+			break
+		}
+		object, ok := extractFirstJSONObject(content[start:])
+		if !ok {
+			content = content[start+1:]
+			continue
+		}
+		objects = append(objects, object)
+		content = content[start+len(object):]
+	}
+	return objects
 }
 
 // thresholds returns the endpoint's effective decision thresholds, falling back
