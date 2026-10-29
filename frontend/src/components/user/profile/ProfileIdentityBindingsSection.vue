@@ -192,6 +192,7 @@
         </div>
       </div>
     </div>
+    <TotpStepUpDialog :controller="stepUp" />
   </div>
 </template>
 
@@ -211,6 +212,8 @@ import {
   unbindAuthIdentity,
 } from '@/api/user'
 import Icon from '@/components/icons/Icon.vue'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
+import { isStepUpBlocked, isStepUpCancelled, stepUpBlockReason, useStepUp } from '@/composables/useStepUp'
 import { useAppStore, useAuthStore } from '@/stores'
 import type { User, UserAuthBindingStatus, UserAuthProvider } from '@/types'
 
@@ -562,14 +565,36 @@ function toggleEmailForm(): void {
   isEmailFormExpanded.value = !isEmailFormExpanded.value
 }
 
-function startBinding(provider: UserAuthProvider): void {
+// Binding a third-party login to an admin account requires step-up: the backend
+// answers STEP_UP_REQUIRED and the dialog asks for a TOTP code before redirecting.
+// Regular accounts pass straight through.
+const stepUp = useStepUp()
+
+async function startBinding(provider: UserAuthProvider): Promise<void> {
   if (provider === 'email') {
     return
   }
-  startOAuthBinding(provider, {
-    redirectTo: route.fullPath || '/profile',
-    wechatOAuthSettings: provider === 'wechat' ? wechatOAuthSettings.value : null,
-  })
+  try {
+    await stepUp.run(() =>
+      startOAuthBinding(provider, {
+        redirectTo: route.fullPath || '/profile',
+        wechatOAuthSettings: provider === 'wechat' ? wechatOAuthSettings.value : null,
+      })
+    )
+  } catch (error) {
+    if (isStepUpCancelled(error)) {
+      return
+    }
+    if (isStepUpBlocked(error)) {
+      appStore.showError(
+        stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN'
+          ? t('stepUp.adminApiKeyForbidden')
+          : t('stepUp.notEnabled')
+      )
+      return
+    }
+    appStore.showError((error as { message?: string }).message || t('common.tryAgain'))
+  }
 }
 
 function applyUpdatedUser(user: User): void {

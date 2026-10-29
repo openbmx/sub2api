@@ -35,6 +35,23 @@ func TestUpdateAdminUnchangedEmailSkipsStepUp(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+// Demoting first turned the admin into a plain user, after which a password
+// change or disable needed no step-up: two requests around the gate above.
+func TestDemoteAdminRequiresStepUp(t *testing.T) {
+	router, _ := setupRoleStepUpRouter(t)
+
+	rec := doJSON(t, router, http.MethodPut, "/api/v1/admin/users/2", map[string]any{"role": "user"})
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// The edit form always resends the admin's current role; that alone must not prompt.
+func TestUpdateAdminKeepingRoleSkipsStepUp(t *testing.T) {
+	router, _ := setupRoleStepUpRouter(t)
+
+	rec := doJSON(t, router, http.MethodPut, "/api/v1/admin/users/2", map[string]any{"role": "admin", "notes": "on call"})
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestUpdateRegularUserPasswordSkipsStepUp(t *testing.T) {
 	router, _ := setupRoleStepUpRouter(t)
 

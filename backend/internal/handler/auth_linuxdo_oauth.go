@@ -1177,6 +1177,10 @@ func (h *AuthHandler) PrepareOAuthBindAccessTokenCookie(c *gin.Context) {
 		response.ErrorFrom(c, infraerrors.Unauthorized("UNAUTHORIZED", "authentication required"))
 		return
 	}
+	// Binding an OAuth login to an admin account needs step-up (oauth_bind_step_up.go).
+	if !h.requireAdminOAuthBindStepUp(c) {
+		return
+	}
 
 	setOAuthBindAccessTokenCookie(c, token, isRequestHTTPS(c))
 	c.Status(http.StatusNoContent)
@@ -1215,6 +1219,11 @@ func (h *AuthHandler) resolveOAuthBindTargetUserID(c *gin.Context) (*int64, erro
 	}
 	if user == nil || !user.IsActive() || claims.TokenVersion != user.TokenVersion {
 		return nil, service.ErrInvalidToken
+	}
+	// The cookie can be set by the client, so this is the authoritative check
+	// for binding an OAuth login to an admin account (oauth_bind_step_up.go).
+	if err := h.oauthBindStepUpSatisfied(c, user, claims); err != nil {
+		return nil, err
 	}
 	return &user.ID, nil
 }

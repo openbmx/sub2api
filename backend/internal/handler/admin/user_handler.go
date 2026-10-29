@@ -359,14 +359,18 @@ func (h *UserHandler) Update(c *gin.Context) {
 	// 改管理员账号的密码或邮箱同样需要 step-up：否则拿到管理员会话的人可以先重置
 	// 密码重新登录、再换绑自己的 TOTP，从而满足 step-up 本身。编辑表单总是带着
 	// email，所以只在邮箱真的变化时才算。
-	if req.Password != "" || req.Email != "" {
+	// 把管理员降级也算在内：降级后目标就是普通用户，改密码、禁用都不再触发门控，
+	// 两次请求就能绕开上面的保护，并把其他管理员逐个锁在后台外。编辑表单总是带着
+	// role，所以只在真的从 admin 改成别的角色时才算。
+	if req.Password != "" || req.Email != "" || req.Role != "" {
 		target, err := h.adminService.GetUser(c.Request.Context(), userID)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
 		}
 		emailChanged := req.Email != "" && !strings.EqualFold(strings.TrimSpace(req.Email), strings.TrimSpace(target.Email))
-		if target.Role == service.RoleAdmin && (req.Password != "" || emailChanged) {
+		demoted := req.Role != "" && req.Role != service.RoleAdmin
+		if target.Role == service.RoleAdmin && (req.Password != "" || emailChanged || demoted) {
 			if !middleware.EnforceStepUp(c, h.totpService, h.userService, h.settingService) {
 				return
 			}

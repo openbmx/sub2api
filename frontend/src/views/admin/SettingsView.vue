@@ -12028,16 +12028,34 @@ async function loadAdminApiKey() {
   }
 }
 
+// 生成/删除管理员 API Key 需要二次验证：后端返回 STEP_UP_REQUIRED 时弹 TOTP 后重试。
+// 返回 true 表示错误已按二次验证处理（取消静默返回，无法验证时给出提示）。
+function handleAdminApiKeyStepUpError(error: unknown): boolean {
+  if (isStepUpCancelled(error)) return true;
+  if (isStepUpBlocked(error)) {
+    appStore.showError(
+      stepUpBlockReason(error) === "STEP_UP_ADMIN_API_KEY_FORBIDDEN"
+        ? t("stepUp.adminApiKeyForbidden")
+        : t("stepUp.notEnabled"),
+    );
+    return true;
+  }
+  return false;
+}
+
 async function createAdminApiKey() {
   adminApiKeyOperating.value = true;
   try {
-    const result = await adminAPI.settings.regenerateAdminApiKey();
+    const result = await settingsStepUp.run(() =>
+      adminAPI.settings.regenerateAdminApiKey(),
+    );
     newAdminApiKey.value = result.key;
     adminApiKeyExists.value = true;
     adminApiKeyMasked.value =
       result.key.substring(0, 10) + "..." + result.key.slice(-4);
     appStore.showSuccess(t("admin.settings.adminApiKey.keyGenerated"));
   } catch (error: unknown) {
+    if (handleAdminApiKeyStepUpError(error)) return;
     appStore.showError(extractApiErrorMessage(error, t("common.error")));
   } finally {
     adminApiKeyOperating.value = false;
@@ -12053,12 +12071,13 @@ async function deleteAdminApiKey() {
   if (!confirm(t("admin.settings.adminApiKey.deleteConfirm"))) return;
   adminApiKeyOperating.value = true;
   try {
-    await adminAPI.settings.deleteAdminApiKey();
+    await settingsStepUp.run(() => adminAPI.settings.deleteAdminApiKey());
     adminApiKeyExists.value = false;
     adminApiKeyMasked.value = "";
     newAdminApiKey.value = "";
     appStore.showSuccess(t("admin.settings.adminApiKey.keyDeleted"));
   } catch (error: unknown) {
+    if (handleAdminApiKeyStepUpError(error)) return;
     appStore.showError(extractApiErrorMessage(error, t("common.error")));
   } finally {
     adminApiKeyOperating.value = false;
