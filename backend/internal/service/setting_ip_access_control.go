@@ -185,8 +185,15 @@ func (s *SettingService) GetIPAccessControlRuntimeCached(ctx context.Context) *I
 		if time.Now().Before(cached.expiresAt) {
 			return cached.runtime
 		}
-		// 过期：先返回旧值，后台刷新，避免热路径阻塞在 DB 上。
-		go s.refreshIPAccessControlRuntime(context.WithoutCancel(ctx))
+		// 过期：先返回旧值，后台刷新，避免热路径阻塞在 DB 上。只起一个刷新协程：
+		// singleflight 只合并 DB 调用，不合并协程，此前每个请求各起一个去排队，
+		// 设置库一慢（超时 3 秒）就是成千上万个协程堆在那里。
+		if s.ipAccessControlRefreshing.CompareAndSwap(false, true) {
+			go func() {
+				defer s.ipAccessControlRefreshing.Store(false)
+				s.refreshIPAccessControlRuntime(context.WithoutCancel(ctx))
+			}()
+		}
 		return cached.runtime
 	}
 	// 冷启动：同步加载一次。

@@ -459,6 +459,37 @@ describe('admin RiskControlView', () => {
     expect(showError).not.toHaveBeenCalled()
   })
 
+  // The save sends every field. After a failed load the form held its empty
+  // defaults, and saving it cleared and disabled the stored blacklist.
+  it('keeps ip access save disabled until the stored settings have loaded', async () => {
+    getIPAccessControl.mockRejectedValueOnce({ status: 500, message: 'load failed' })
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          ProxySelector: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="ip-access-save"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="ip-blacklist-input"]').exists()).toBe(false)
+    await wrapper.get('[data-test="ip-access-save"]').trigger('click')
+    expect(updateIPAccessControl).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-test="ip-access-reload"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="ip-access-save"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="ip-access-load-failed"]').exists()).toBe(false)
+  })
+
   it('warns that the IP rules can be bypassed when the client IP comes from forwarding headers', async () => {
     const stubs = { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true }
     getIPAccessControl.mockResolvedValue({

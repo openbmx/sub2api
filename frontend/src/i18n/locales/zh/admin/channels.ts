@@ -262,6 +262,8 @@ export default {
         saving: '保存中...',
         saved: 'IP 访问控制配置已保存',
         loadFailed: '加载 IP 访问控制配置失败',
+        loadFailedNotice: '未能读取当前的 IP 访问控制配置。为避免用空白表单覆盖已保存的黑名单，重新加载成功前不能保存。',
+        reload: '重新加载',
         saveFailed: '保存 IP 访问控制配置失败',
         blacklistTitle: 'IP/IP 段黑名单',
         blacklistHint: '命中黑名单的 IP 访问任何入口都会直接返回 403。',

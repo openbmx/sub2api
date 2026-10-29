@@ -69,7 +69,7 @@
             <button
               type="button"
               class="btn btn-primary inline-flex w-fit items-center gap-2"
-              :disabled="ipAccessSaving || ipAccessLoading"
+              :disabled="ipAccessSaving || ipAccessLoading || !ipAccessLoaded"
               data-test="ip-access-save"
               @click="saveIPAccess()"
             >
@@ -80,14 +80,24 @@
             <div class="h-6 w-6 animate-spin rounded-full border-b-2 border-primary-600"></div>
           </div>
           <div
-            v-if="!ipAccessLoading && ipAccessClientIPSpoofable"
+            v-if="!ipAccessLoading && !ipAccessLoaded"
+            class="flex flex-col items-start gap-3 px-6 py-5 text-sm text-gray-600 dark:text-gray-300"
+            data-test="ip-access-load-failed"
+          >
+            <p>{{ t('admin.riskControl.ipAccess.loadFailedNotice') }}</p>
+            <button type="button" class="btn btn-secondary" data-test="ip-access-reload" @click="loadIPAccess()">
+              {{ t('admin.riskControl.ipAccess.reload') }}
+            </button>
+          </div>
+          <div
+            v-if="ipAccessLoaded && !ipAccessLoading && ipAccessClientIPSpoofable"
             class="mx-6 mt-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
             data-test="ip-access-spoof-warning"
           >
             <p class="font-medium">{{ t('admin.riskControl.ipAccess.spoofWarningTitle') }}</p>
             <p class="mt-1">{{ t('admin.riskControl.ipAccess.spoofWarning', { ip: ipAccessDetectedIP || '-' }) }}</p>
           </div>
-          <div v-if="!ipAccessLoading" class="grid grid-cols-1 gap-8 px-6 py-5 lg:grid-cols-2">
+          <div v-if="ipAccessLoaded && !ipAccessLoading" class="grid grid-cols-1 gap-8 px-6 py-5 lg:grid-cols-2">
             <div class="space-y-4">
               <div class="flex items-start justify-between gap-4">
                 <div>
@@ -1923,6 +1933,10 @@ function applyConfig(config: ContentModerationConfig) {
 // ---- IP 访问控制（IP 黑名单 + IPv6 拦截）----
 const ipAccessLoading = ref(true)
 const ipAccessSaving = ref(false)
+// The save sends every field, so a form that never received the stored settings
+// would overwrite them with its empty defaults — clearing and disabling the
+// blacklist after a single failed load. Saving waits for a successful load.
+const ipAccessLoaded = ref(false)
 const ipAccessClientIPSpoofable = ref(false)
 const ipAccessDetectedIP = ref('')
 const ipAccessForm = reactive({
@@ -1947,6 +1961,7 @@ async function loadIPAccess() {
   ipAccessLoading.value = true
   try {
     applyIPAccess(await adminAPI.riskControl.getIPAccessControl())
+    ipAccessLoaded.value = true
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.ipAccess.loadFailed')))
   } finally {
@@ -1955,7 +1970,7 @@ async function loadIPAccess() {
 }
 
 async function saveIPAccess(force = false) {
-  if (ipAccessSaving.value) return
+  if (ipAccessSaving.value || !ipAccessLoaded.value) return
   const entries = ipAccessForm.ip_blacklist_text
     .split(/\r?\n/)
     .map((entry) => entry.trim())

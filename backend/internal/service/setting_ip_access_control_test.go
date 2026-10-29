@@ -5,8 +5,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +26,41 @@ func (s *writableSettingRepoStub) Set(ctx context.Context, key, value string) er
 	}
 	s.values[key] = value
 	return nil
+}
+
+// slowSettingRepoStub holds every read until released, like a settings DB that
+// has stopped answering.
+type slowSettingRepoStub struct {
+	*settingRepoStub
+	release chan struct{}
+}
+
+func (s *slowSettingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	return s.settingRepoStub.GetValue(ctx, key)
+}
+
+// Every request after the cache expired started its own refresh goroutine;
+// singleflight merged the DB call but not the goroutines, so a slow settings DB
+// piled one goroutine per request behind it.
+func TestIPAccessControlRuntimeRefreshStartsOneGoroutine(t *testing.T) {
+	repo := &slowSettingRepoStub{settingRepoStub: &settingRepoStub{values: map[string]string{}}, release: make(chan struct{})}
+	svc := NewSettingService(repo, nil)
+	svc.storeIPAccessControlRuntime(&IPAccessControlRuntime{}, -time.Second) // already expired
+
+	before := goruntime.NumGoroutine()
+	for i := 0; i < 500; i++ {
+		svc.GetIPAccessControlRuntimeCached(context.Background())
+	}
+	time.Sleep(50 * time.Millisecond)
+	started := goruntime.NumGoroutine() - before
+	close(repo.release)
+	require.Eventually(t, func() bool { return !svc.ipAccessControlRefreshing.Load() }, 2*time.Second, 5*time.Millisecond)
+	require.LessOrEqual(t, started, 5, "expired cache started %d goroutines for 500 requests", started)
 }
 
 func newIPAccessSettingService(values map[string]string) (*SettingService, *writableSettingRepoStub) {

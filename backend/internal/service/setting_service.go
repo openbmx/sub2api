@@ -142,7 +142,9 @@ type SettingService struct {
 	// ipAccessControlRuntimeCache IP 访问控制配置进程内缓存（*cachedIPAccessControlRuntime）。
 	// 全局中间件每个请求都会读取，禁止在热路径上直接访问 DB。
 	ipAccessControlRuntimeCache atomic.Value
-	ipAccessControlRuntimeSF    singleflight.Group
+	// ipAccessControlRefreshing 保证过期后只有一个后台刷新在跑（见 GetIPAccessControlRuntimeCached）。
+	ipAccessControlRefreshing atomic.Bool
+	ipAccessControlRuntimeSF  singleflight.Group
 
 	// panelRateLimitCache 面板 API 限流配置进程内缓存（*cachedPanelRateLimitSettings）。
 	// 面板每个认证请求都会读取，禁止在热路径上直接访问 DB。

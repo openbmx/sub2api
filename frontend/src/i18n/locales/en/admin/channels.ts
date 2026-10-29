@@ -264,6 +264,8 @@ export default {
         saving: 'Saving...',
         saved: 'IP access control settings saved',
         loadFailed: 'Failed to load IP access control settings',
+        loadFailedNotice: 'The current IP access control settings could not be loaded. Saving stays disabled until a reload succeeds, so an empty form cannot overwrite the stored blacklist.',
+        reload: 'Reload',
         saveFailed: 'Failed to save IP access control settings',
         blacklistTitle: 'IP / CIDR blacklist',
         blacklistHint: 'Requests from blacklisted IPs receive 403 on every endpoint.',
