@@ -42,3 +42,24 @@ exceptions:
     mitigation: "No zero-size custom generators in codebase; upgrade when nanoid releases fix"
     expires_on: "2026-10-13"
     owner: "security@your-domain"
+  - package: vue-i18n
+    advisory: "GHSA-83rm-6c8r-g728"
+    severity: high
+    reason: "The advisory is a srcdoc bypass of escapeParameter; escapeParameter is never enabled (createI18n in frontend/src/i18n/index.ts), and messages are static locale files bundled at build time, not user-editable"
+    mitigation: "Keep escapeParameter off and do not render translated messages with user-supplied parameters through v-html; upgrade when vue-i18n publishes a fix (no patched version listed as of 2026-10-29)"
+    expires_on: "2026-12-31"
+    owner: "security@your-domain"
+  - package: "@intlify/shared"
+    advisory: "GHSA-83rm-6c8r-g728"
+    severity: high
+    reason: "Transitive dependency of vue-i18n, same advisory; escapeParameter is never enabled and messages are static locale files bundled at build time"
+    mitigation: "Upgrade together with vue-i18n once a patched release exists (none listed as of 2026-10-29)"
+    expires_on: "2026-12-31"
+    owner: "security@your-domain"
+  - package: "@intlify/core-base"
+    advisory: "GHSA-83rm-6c8r-g728"
+    severity: high
+    reason: "Transitive dependency of vue-i18n, same advisory; escapeParameter is never enabled and messages are static locale files bundled at build time"
+    mitigation: "Upgrade together with vue-i18n once a patched release exists (none listed as of 2026-10-29)"
+    expires_on: "2026-12-31"
+    owner: "security@your-domain"

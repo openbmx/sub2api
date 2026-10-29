@@ -82,8 +82,12 @@ func TestAdminService_BatchDeleteUsers_SkipsAdminAndMissing(t *testing.T) {
 	require.Equal(t, []int64{1}, result.SuccessIDs)
 	require.Len(t, result.Skipped, 2)
 	require.Equal(t, int64(2), result.Skipped[0].ID)
-	require.Equal(t, "cannot delete admin user", result.Skipped[0].Reason)
+	// Reasons are shown to the admin, so they carry the error's message rather
+	// than ApplicationError's debug format (code=… reason=… metadata=…).
+	require.Contains(t, result.Skipped[0].Reason, "cannot delete admin user")
+	require.NotContains(t, result.Skipped[0].Reason, "code=")
 	require.Equal(t, int64(999), result.Skipped[1].ID)
+	require.Equal(t, "user not found", result.Skipped[1].Reason)
 	require.Equal(t, []int64{1}, repo.deletedIDs)
 	require.Equal(t, []int64{1}, invalidator.userIDs)
 }

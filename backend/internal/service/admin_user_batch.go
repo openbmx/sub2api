@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 // batchBalanceStepTimeout bounds one user's adjustment inside a batch.
@@ -12,6 +15,19 @@ const batchBalanceStepTimeout = 30 * time.Second
 // BatchNotProcessedReasonPrefix starts the Skipped reason of users a batch did
 // not reach before its deadline, so a follow-up can target exactly them.
 const BatchNotProcessedReasonPrefix = "not processed: "
+
+// batchSkipReason is the Skipped reason shown to the admin. ApplicationError's
+// Error() is a debug format (code=… reason=… metadata=…), and ErrUserNotFound
+// as well as the admin guards in DeleteUser are ApplicationErrors, so their
+// message is used instead. infraerrors.Message is not enough on its own: it
+// turns a plain error into the generic unknown-error message.
+func batchSkipReason(err error) string {
+	var appErr *infraerrors.ApplicationError
+	if errors.As(err, &appErr) && appErr.Message != "" {
+		return appErr.Message
+	}
+	return err.Error()
+}
 
 // BatchUserOperationSkipped 记录批量用户操作中被跳过的单个用户及原因。
 type BatchUserOperationSkipped struct {
@@ -54,7 +70,7 @@ func (s *adminServiceImpl) BatchUpdateUserStatus(ctx context.Context, userIDs []
 	for _, userID := range dedupeUserIDs(userIDs) {
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
-			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: err.Error()})
+			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: batchSkipReason(err)})
 			continue
 		}
 		if user.Role == RoleAdmin && status == StatusDisabled {
@@ -64,7 +80,7 @@ func (s *adminServiceImpl) BatchUpdateUserStatus(ctx context.Context, userIDs []
 		if user.Status != status {
 			user.Status = status
 			if err := s.userRepo.Update(ctx, user, UserUpdateFields{Status: true}); err != nil {
-				result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: err.Error()})
+				result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: batchSkipReason(err)})
 				continue
 			}
 			// 状态参与网关鉴权快照，必须失效缓存，否则封禁在 L2 TTL 内不生效。
@@ -84,7 +100,7 @@ func (s *adminServiceImpl) BatchDeleteUsers(ctx context.Context, userIDs []int64
 	result := &BatchUserOperationResult{}
 	for _, userID := range dedupeUserIDs(userIDs) {
 		if err := s.DeleteUser(ctx, userID); err != nil {
-			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: err.Error()})
+			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: batchSkipReason(err)})
 			continue
 		}
 		result.Affected++
@@ -122,7 +138,7 @@ func (s *adminServiceImpl) BatchUpdateUserBalance(ctx context.Context, userIDs [
 		err := s.applyUserBalanceChange(stepCtx, userID, balance, operation, notes)
 		cancel()
 		if err != nil {
-			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: err.Error()})
+			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: batchSkipReason(err)})
 			continue
 		}
 		result.Affected++
