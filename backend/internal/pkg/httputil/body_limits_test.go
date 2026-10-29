@@ -108,3 +108,29 @@ func TestNormalizeLenientJSONRequestBody_SizesEscapesBeforeAllocating(t *testing
 		t.Fatalf("got %q, %v", got, err)
 	}
 }
+
+// The size check above uses the route's body limit, 256 MB on the gateway, so
+// it let a body of NULs grow sixfold for free: a few KB of gzip became a
+// 252 MB allocation for any API key. The growth itself is capped now.
+func TestNormalizeLenientJSONRequestBody_CapsEscapeGrowthUnderALargeLimit(t *testing.T) {
+	const gatewayLimit = 256 << 20
+	bomb := []byte(`{"a":"` + strings.Repeat("\x00", 4<<20) + `"}`)
+	if _, err := NormalizeLenientJSONRequestBody(bomb, gatewayLimit); err == nil {
+		t.Fatal("4 MB of NULs (20 MB of escapes) must be refused even under a 256 MB limit")
+	} else {
+		var maxErr *http.MaxBytesError
+		if !errors.As(err, &maxErr) {
+			t.Fatalf("want *http.MaxBytesError, got %v", err)
+		}
+	}
+
+	// What a broken client really sends: a prompt with raw newlines in it.
+	ordinary := []byte(`{"a":"` + strings.Repeat("line\n", 10000) + `"}`)
+	out, err := NormalizeLenientJSONRequestBody(ordinary, gatewayLimit)
+	if err != nil {
+		t.Fatalf("an ordinary body with raw newlines must still be normalized: %v", err)
+	}
+	if strings.ContainsRune(string(out), '\n') {
+		t.Fatal("raw newlines must be escaped")
+	}
+}

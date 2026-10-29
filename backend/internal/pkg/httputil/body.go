@@ -20,6 +20,9 @@ const (
 	// maxDecompressedBodySize limits the decompressed request body to 64 MB
 	// to prevent decompression bomb attacks.
 	maxDecompressedBodySize = 64 << 20
+	// maxLenientEscapeGrowthBytes caps how much escaping raw control bytes may
+	// grow a body: 8 MB is about 1.6 million unescaped control characters.
+	maxLenientEscapeGrowthBytes = 8 << 20
 )
 
 // PrereadBody 回填已读取完成的请求体：作为 io.ReadCloser 可被再次顺序消费
@@ -244,6 +247,13 @@ func NormalizeLenientJSONRequestBody(body []byte, maxNormalizedBytes int64) ([]b
 	}
 	normalizedSize := int64(len(body)) + 5*int64(controlBytes)
 	if normalizedSize > maxNormalizedBytes {
+		return nil, &http.MaxBytesError{Limit: maxNormalizedBytes}
+	}
+	// The limit above is the route's whole body limit (256 MB on the gateway),
+	// so it did not bound the growth itself: about 40 KB of gzip decodes to 42 MB
+	// of NULs and escaped to 252 MB, still under it, for any API key. Growth is
+	// capped on its own; real clients leave a few thousand raw newlines unescaped.
+	if 5*int64(controlBytes) > maxLenientEscapeGrowthBytes {
 		return nil, &http.MaxBytesError{Limit: maxNormalizedBytes}
 	}
 
