@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"sort"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -100,6 +102,10 @@ func (h *UserHandler) BatchUpdateBalance(c *gin.Context) {
 		response.BadRequest(c, "balance must be greater than 0")
 		return
 	}
+	// The idempotency hash covers the body, so it must not depend on the order
+	// the users were picked in: the same batch re-picked in another order would
+	// reuse its key with a different hash and get 409 on every retry.
+	req.UserIDs = normalizeBatchUserIDs(req.UserIDs)
 
 	userIDs := req.UserIDs
 	if req.All {
@@ -134,7 +140,35 @@ func (h *UserHandler) BatchUpdateBalance(c *gin.Context) {
 		UserIDs: userIDs,
 		Body:    req,
 	}
-	executeAdminIdempotentJSON(c, "admin.users.balance.batch_update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	// The execution timeout is what makes the idempotency key a real retry
+	// handle. Without it the batch ran on the request context: a client, proxy
+	// or browser timeout cancelled it halfway, the outcome was never stored, the
+	// key sat in "processing" (409 on every retry) until its 24h TTL, and the
+	// admin's only way forward — a fresh key — credited the finished users again.
+	// With it the batch detaches from the client, keeps its lease renewed and
+	// stores its result, so a same-key retry replays it.
+	executeAdminIdempotentJSONWithTimeout(c, "admin.users.balance.batch_update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), batchBalanceExecutionTimeout, func(ctx context.Context) (any, error) {
 		return h.adminService.BatchUpdateUserBalance(ctx, userIDs, req.Balance, req.Operation, req.Notes)
 	})
+}
+
+// batchBalanceExecutionTimeout bounds one batch-balance execution. Users not
+// reached by then are reported as not processed (BatchNotProcessedReasonPrefix).
+const batchBalanceExecutionTimeout = 10 * time.Minute
+
+// normalizeBatchUserIDs returns the ids sorted and without duplicates.
+func normalizeBatchUserIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return ids
+	}
+	out := append([]int64(nil), ids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	n := 0
+	for i, id := range out {
+		if i == 0 || id != out[n-1] {
+			out[n] = id
+			n++
+		}
+	}
+	return out[:n]
 }

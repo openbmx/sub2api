@@ -3,7 +3,7 @@
     :show="show"
     :title="t('admin.users.bulkBalance.title')"
     width="normal"
-    @close="emit('close')"
+    @close="requestClose"
   >
     <form id="bulk-balance-form" class="space-y-5" @submit.prevent="handleSubmit">
       <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -73,7 +73,13 @@
 
     <template #footer>
       <div class="flex justify-end gap-3">
-        <button type="button" class="btn btn-secondary" @click="emit('close')">
+        <button
+          type="button"
+          class="btn btn-secondary"
+          :disabled="submitting"
+          data-test="cancel"
+          @click="requestClose"
+        >
           {{ t('common.cancel') }}
         </button>
         <button
@@ -90,6 +96,20 @@
   </BaseDialog>
 </template>
 
+<script lang="ts">
+// Idempotency keys of batches that have not been answered for good, by batch
+// content. Module-scoped so they outlive the dialog: the server keeps running a
+// batch after the browser gives up (timeout, closed tab, proxy cut-off), and
+// re-submitting the same batch under a fresh key would credit the users it had
+// already finished a second time. One entry per batch, so trying a different
+// batch in between does not cost the first one its key.
+const pendingKeys = new Map<string, string>()
+
+export function resetPendingBulkBalanceSubmission() {
+  pendingKeys.clear()
+}
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -105,7 +125,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  success: [affected: number]
+  success: [affected: number, skippedIds: number[]]
 }>()
 
 const { t } = useI18n()
@@ -149,30 +169,54 @@ const operationHint = computed(() => {
   }
 })
 
-// 同一次提交的重试复用同一个幂等键：请求在前端超时后，后端可能已经逐个加完了余额，
-// 带着原键重试时后端回放那次结果而不是再加一遍。任何输入变化都算新的提交，换新键。
-let operationKey = ''
+// 同一批（用户、操作、金额、备注都相同）的重试复用同一个幂等键：请求在前端超时后，
+// 后端仍会把这一批跑完，带着原键重试时后端回放那次结果而不是再加一遍。键放在模块
+// 作用域（pendingKeys），关掉再打开对话框也不会丢；输入有任何变化就是另一批。
 const newOperationKey = () =>
   `user-batch-balance-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+
+// 请求体里的 user_ids 与指纹用同一份去重排序后的列表。服务端按请求体算摘要，若请求
+// 体保留勾选顺序，换个顺序选同一批人会命中同一把键、摘要却不同，重试永远 409。
+const normalizedUserIDs = () => [...new Set(props.selectedIds)].sort((a, b) => a - b)
+
+const submissionFingerprint = (ids: number[], amount: number) =>
+  JSON.stringify({
+    ids,
+    operation: operation.value,
+    amount,
+    notes: notes.value.trim()
+  })
+
+// 只有服务端明确拒绝了这一次请求（与时机无关的 4xx），才说明它没有执行，可以作废这把键。
+// 超时、断网、5xx、409（仍在处理）、429 都可能在服务端继续跑完，键要留着给重试。
+const isDefinitiveRejection = (error: unknown) => {
+  const status = (error as { status?: unknown } | null)?.status
+  return (
+    typeof status === 'number' &&
+    status >= 400 &&
+    status < 500 &&
+    ![408, 409, 425, 429].includes(status)
+  )
+}
 
 const reset = () => {
   operation.value = 'set'
   amountValue.value = ''
   notes.value = ''
-  submitting.value = false
-  operationKey = ''
 }
 
 watch(
   () => props.show,
   (show) => {
-    if (show) reset()
+    // 请求仍在进行时不重置：提交中的状态必须保留，否则又能发出第二批。
+    if (show && !submitting.value) reset()
   }
 )
 
-watch([operation, amountValue, notes, () => props.selectedIds.join(',')], () => {
-  operationKey = ''
-})
+const requestClose = () => {
+  if (submitting.value) return
+  emit('close')
+}
 
 const handleSubmit = async () => {
   if (!canSubmit.value || parsedAmount.value === null) return
@@ -193,29 +237,45 @@ const handleSubmit = async () => {
   if (!confirmed) return
 
   submitting.value = true
-  if (!operationKey) operationKey = newOperationKey()
+  const userIDs = normalizedUserIDs()
+  const fingerprint = submissionFingerprint(userIDs, parsedAmount.value)
+  let key = pendingKeys.get(fingerprint)
+  if (!key) {
+    key = newOperationKey()
+    pendingKeys.set(fingerprint, key)
+  }
   try {
     const result = await adminAPI.users.batchUpdateBalance(
       {
-        user_ids: [...props.selectedIds],
+        user_ids: userIDs,
         balance: parsedAmount.value,
         operation: operation.value,
         notes: notes.value.trim()
       },
-      operationKey
+      key
     )
-    operationKey = ''
-    const skipped = result.skipped?.length ?? 0
-    if (skipped > 0) {
+    pendingKeys.delete(fingerprint)
+    const skippedItems = result.skipped ?? []
+    if (skippedItems.length > 0) {
       appStore.showError(
-        t('admin.users.bulkBalance.partialSuccess', { count: result.affected, skipped })
+        t('admin.users.bulkBalance.partialSuccessReselected', {
+          count: result.affected,
+          skipped: skippedItems.length,
+          reason: skippedItems[0].reason
+        })
       )
     } else {
       appStore.showSuccess(t('admin.users.bulkBalance.success', { count: result.affected }))
     }
-    emit('success', result.affected)
+    submitting.value = false
+    emit(
+      'success',
+      result.affected,
+      skippedItems.map((item) => item.id)
+    )
     emit('close')
   } catch (error: unknown) {
+    if (isDefinitiveRejection(error)) pendingKeys.delete(fingerprint)
     // apiClient 拒绝时给的是 { status, code, message }，没有 response 字段。
     appStore.showError(extractApiErrorMessage(error, t('admin.users.bulkBalance.failed')))
   } finally {

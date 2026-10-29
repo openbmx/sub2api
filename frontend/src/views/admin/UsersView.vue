@@ -811,7 +811,7 @@
       :show="showBulkBalanceModal"
       :selected-ids="selectedIds"
       @close="showBulkBalanceModal = false"
-      @success="handleBulkLimitsSuccess"
+      @success="handleBulkBalanceSuccess"
     />
     <ConfirmDialog
       :show="bulkActionType !== null"
@@ -1697,6 +1697,18 @@ const loadUsers = async () => {
 
 const handleBulkLimitsSuccess = async () => {
   clearSelection()
+  await loadUsers()
+}
+
+// Users a batch skipped (insufficient balance, not reached before the deadline)
+// stay selected so the admin can see and retry exactly them; the reason is in
+// the toast. Clearing the selection used to lose which ones they were.
+const handleBulkBalanceSuccess = async (_affected: number, skippedIds: number[] = []) => {
+  if (skippedIds.length > 0) {
+    setSelectedIds(skippedIds)
+  } else {
+    clearSelection()
+  }
   await loadUsers()
 }
 

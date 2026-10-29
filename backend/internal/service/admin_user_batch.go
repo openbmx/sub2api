@@ -3,7 +3,15 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 )
+
+// batchBalanceStepTimeout bounds one user's adjustment inside a batch.
+const batchBalanceStepTimeout = 30 * time.Second
+
+// BatchNotProcessedReasonPrefix starts the Skipped reason of users a batch did
+// not reach before its deadline, so a follow-up can target exactly them.
+const BatchNotProcessedReasonPrefix = "not processed: "
 
 // BatchUserOperationSkipped 记录批量用户操作中被跳过的单个用户及原因。
 type BatchUserOperationSkipped struct {
@@ -87,6 +95,14 @@ func (s *adminServiceImpl) BatchDeleteUsers(ctx context.Context, userIDs []int64
 
 // BatchUpdateUserBalance 批量调整用户余额。operation 支持 set/add/subtract，
 // 逐个复用单用户原子余额路径（含调整流水与缓存失效），失败的用户记入 Skipped。
+//
+// Skipped 只能表示「没有入账」：界面会把 Skipped 的用户重新选中供重试，已入账却被
+// 报成 Skipped 的用户重试时会被重复入账。因此：
+//   - ctx 的截止时间只在用户之间生效：每个用户的调整在脱离 ctx 取消的独立上下文里
+//     跑完，截止后尚未处理的用户以 BatchNotProcessedReasonPrefix 开头的原因记入
+//     Skipped，明确表示「未执行」；
+//   - 提交之后不再回读用户（applyUserBalanceChange）：回读失败曾让已提交的调整被报
+//     成失败。
 func (s *adminServiceImpl) BatchUpdateUserBalance(ctx context.Context, userIDs []int64, balance float64, operation string, notes string) (*BatchUserOperationResult, error) {
 	switch operation {
 	case "set", "add", "subtract":
@@ -96,7 +112,16 @@ func (s *adminServiceImpl) BatchUpdateUserBalance(ctx context.Context, userIDs [
 
 	result := &BatchUserOperationResult{}
 	for _, userID := range dedupeUserIDs(userIDs) {
-		if _, err := s.UpdateUserBalance(ctx, userID, balance, operation, notes); err != nil {
+		if err := ctx.Err(); err != nil {
+			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: BatchNotProcessedReasonPrefix + err.Error()})
+			continue
+		}
+		stepCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchBalanceStepTimeout)
+		// Not UpdateUserBalance: its read-back can fail after the commit, and a
+		// committed credit reported as skipped is retried and credited twice.
+		err := s.applyUserBalanceChange(stepCtx, userID, balance, operation, notes)
+		cancel()
+		if err != nil {
 			result.Skipped = append(result.Skipped, BatchUserOperationSkipped{ID: userID, Reason: err.Error()})
 			continue
 		}

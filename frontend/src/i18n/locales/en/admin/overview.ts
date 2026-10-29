@@ -544,6 +544,7 @@ export default {
         confirm: 'Apply "{operation}" with amount {amount} to {count} users?',
         success: 'Updated balances for {count} users',
         partialSuccess: 'Updated balances for {count} users, {skipped} skipped',
+        partialSuccessReselected: 'Updated balances for {count} users; {skipped} skipped and re-selected. First reason: {reason}',
         failed: 'Failed to update user balances'
       },
       bulkStatus: {

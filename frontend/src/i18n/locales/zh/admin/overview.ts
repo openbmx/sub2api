@@ -544,6 +544,7 @@ export default {
         confirm: '确定对 {count} 个用户执行「{operation}」金额 {amount} 吗？',
         success: '已更新 {count} 个用户的余额',
         partialSuccess: '已更新 {count} 个用户的余额，{skipped} 个用户被跳过',
+        partialSuccessReselected: '已更新 {count} 个用户的余额；{skipped} 个用户被跳过，已重新选中。首个原因：{reason}',
         failed: '批量更新用户余额失败'
       },
       bulkStatus: {

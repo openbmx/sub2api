@@ -28,10 +28,10 @@ vi.mock('@/components/common/BaseDialog.vue', () => ({
   },
 }))
 
-import BulkBalanceModal from '../BulkBalanceModal.vue'
+import BulkBalanceModal, { resetPendingBulkBalanceSubmission } from '../BulkBalanceModal.vue'
 
-async function openModal() {
-  const wrapper = mount(BulkBalanceModal, { props: { show: false, selectedIds: [1, 2, 3] } })
+async function openModal(selectedIds: number[] = [1, 2, 3]) {
+  const wrapper = mount(BulkBalanceModal, { props: { show: false, selectedIds } })
   await wrapper.setProps({ show: true })
   return wrapper
 }
@@ -49,6 +49,101 @@ describe('BulkBalanceModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
+    resetPendingBulkBalanceSubmission()
+  })
+
+  // The server keeps running a batch after the browser gives up. Closing and
+  // reopening the dialog used to mint a fresh key, so resubmitting the same batch
+  // credited every user the first run had finished a second time.
+  it('keeps the key across closing and reopening while the batch is unanswered', async () => {
+    mocks.batchUpdateBalance
+      .mockRejectedValueOnce({ status: 0, code: 'ECONNABORTED', message: 'timeout of 120000ms exceeded' })
+      .mockResolvedValueOnce({ affected: 3, skipped: [] })
+    const wrapper = await openModal()
+    await wrapper.get('[data-test="operation-select"]').setValue('add')
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await submit(wrapper)
+
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await wrapper.get('[data-test="operation-select"]').setValue('add')
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await submit(wrapper)
+
+    const [first, second] = sentKeys()
+    expect(second).toBe(first)
+  })
+
+  // The server hashes the request body. Sending the ids in selection order made
+  // the same batch picked in another order reuse its key with a different hash,
+  // which the server answers with 409 on every retry.
+  it('sends one canonical id order so a re-picked batch keeps its key', async () => {
+    mocks.batchUpdateBalance
+      .mockRejectedValueOnce({ status: 0, code: 'ECONNABORTED', message: 'timeout of 120000ms exceeded' })
+      .mockResolvedValueOnce({ affected: 3, skipped: [] })
+    const wrapper = await openModal([3, 1, 2])
+    await wrapper.get('[data-test="operation-select"]').setValue('add')
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await submit(wrapper)
+    await wrapper.setProps({ selectedIds: [2, 3, 1, 1] })
+    await submit(wrapper)
+
+    const [first, second] = sentKeys()
+    expect(second).toBe(first)
+    const sentIds = mocks.batchUpdateBalance.mock.calls.map((call) => call[0].user_ids)
+    expect(sentIds).toEqual([
+      [1, 2, 3],
+      [1, 2, 3],
+    ])
+  })
+
+  // One pending slot meant trying batch B in between cost batch A its key, so
+  // going back to A ran it a second time.
+  it('keeps each unanswered batch on its own key', async () => {
+    const timeout = { status: 0, code: 'ECONNABORTED', message: 'timeout of 120000ms exceeded' }
+    mocks.batchUpdateBalance
+      .mockRejectedValueOnce(timeout)
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce({ affected: 3, skipped: [] })
+    const wrapper = await openModal()
+    await wrapper.get('[data-test="operation-select"]').setValue('add')
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await submit(wrapper)
+    await wrapper.get('[data-test="amount-input"]').setValue('6')
+    await submit(wrapper)
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await submit(wrapper)
+
+    const [batchA, batchB, batchAAgain] = sentKeys()
+    expect(batchB).not.toBe(batchA)
+    expect(batchAAgain).toBe(batchA)
+  })
+
+  it('cannot be closed or cancelled while applying', async () => {
+    mocks.batchUpdateBalance.mockReturnValue(new Promise(() => {}))
+    const wrapper = await openModal()
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="cancel"]').attributes('disabled')).toBeDefined()
+    wrapper.findComponent({ name: 'BaseDialog' }).vm.$emit('close')
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
+
+  it('hands skipped users back for re-selection', async () => {
+    mocks.batchUpdateBalance.mockResolvedValueOnce({
+      affected: 2,
+      success_ids: [1, 3],
+      skipped: [{ id: 2, reason: 'balance cannot be negative' }],
+    })
+    const wrapper = await openModal()
+    await wrapper.get('[data-test="operation-select"]').setValue('subtract')
+    await wrapper.get('[data-test="amount-input"]').setValue('5')
+    await submit(wrapper)
+
+    expect(wrapper.emitted('success')?.[0]).toEqual([2, [2]])
+    expect(mocks.showError).toHaveBeenCalledWith('admin.users.bulkBalance.partialSuccessReselected')
   })
 
   // Users are credited one by one on the server, so a request that timed out on

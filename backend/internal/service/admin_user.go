@@ -514,6 +514,21 @@ func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int6
 }
 
 func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error) {
+	if err := s.applyUserBalanceChange(ctx, userID, balance, operation, notes); err != nil {
+		return nil, err
+	}
+	return s.userRepo.GetByID(ctx, userID)
+}
+
+// applyUserBalanceChange commits one balance change and then runs its
+// follow-ups (cache invalidation, affiliate rebate, adjustment record).
+//
+// Once the commit has gone through, nothing after it may fail the call. The
+// read-back used to sit between the two: a failed read reported a committed
+// credit as an error and skipped its follow-ups, and a batch then listed that
+// user for retry, crediting them twice. UpdateUserBalance reads the user back
+// after this returns; the batch path does not need to.
+func (s *adminServiceImpl) applyUserBalanceChange(ctx context.Context, userID int64, balance float64, operation string, notes string) error {
 	// 余额调整必须走原子接口：先读后整行写回会把并发的计费扣款覆盖掉。
 	var (
 		change BalanceChange
@@ -527,18 +542,13 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	case "subtract":
 		change, err = s.userRepo.AdjustBalance(ctx, userID, -balance)
 	default:
-		return nil, fmt.Errorf("unsupported balance operation: %q", operation)
+		return fmt.Errorf("unsupported balance operation: %q", operation)
 	}
 	if errors.Is(err, ErrBalanceNegative) {
-		return nil, fmt.Errorf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", change.Old, change.New)
+		return fmt.Errorf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", change.Old, change.New)
 	}
 	if err != nil {
-		return nil, err
-	}
-
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return nil, err
+		return err
 	}
 
 	balanceDiff := change.New - change.Old
@@ -561,7 +571,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 		code, err := GenerateRedeemCode()
 		if err != nil {
 			logger.LegacyPrintf("service.admin", "failed to generate adjustment redeem code: %v", err)
-			return user, nil
+			return nil
 		}
 
 		adjustmentRecord := &RedeemCode{
@@ -569,7 +579,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 			Type:   AdjustmentTypeAdminBalance,
 			Value:  balanceDiff,
 			Status: StatusUsed,
-			UsedBy: &user.ID,
+			UsedBy: &userID,
 			Notes:  notes,
 		}
 		now := time.Now()
@@ -580,7 +590,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 		}
 	}
 
-	return user, nil
+	return nil
 }
 
 func (s *adminServiceImpl) tryAccrueAffiliateRebateForAdminRecharge(ctx context.Context, userID int64, operation string, amount float64) {
