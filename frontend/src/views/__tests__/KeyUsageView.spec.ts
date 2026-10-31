@@ -106,6 +106,7 @@ vi.mock('@/stores', () => ({
 
 describe('KeyUsageView daily detail', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     showInfo.mockReset()
     showSuccess.mockReset()
     showError.mockReset()
@@ -242,6 +243,7 @@ describe('KeyUsageView daily detail', () => {
 
 describe('KeyUsageView subscription feature flag', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     localStorage.clear()
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
@@ -268,6 +270,7 @@ describe('KeyUsageView subscription feature flag', () => {
 
   afterEach(() => {
     appStoreState.cachedPublicSettings = null
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
