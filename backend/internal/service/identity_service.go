@@ -242,6 +242,7 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 				"Floored cached fingerprint claude-cli version for account %d: %s", accountID, flooredUA)
 		}
 
+		identityChanged := needWrite
 		if !needWrite && time.Since(time.Unix(cached.UpdatedAt, 0)) > 24*time.Hour {
 			// 距上次写入超过24小时，续期TTL
 			needWrite = true
@@ -250,6 +251,9 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 		if needWrite {
 			cached.UpdatedAt = time.Now().Unix()
 			if err := s.cache.SetFingerprint(ctx, accountID, cached); err != nil {
+				if identityChanged {
+					return nil, fmt.Errorf("persist Claude account identity: %w", err)
+				}
 				logger.LegacyPrintf("service.identity", "Warning: failed to refresh fingerprint for account %d: %v", accountID, err)
 			}
 		}

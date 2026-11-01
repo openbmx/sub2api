@@ -883,7 +883,7 @@ func ValidateClaudeOAuthSystemPromptBlocksConfig(raw string) error {
 func systemInstructionBlocks(system any) []map[string]any {
 	switch v := system.(type) {
 	case string:
-		if text := strings.TrimSpace(v); text != "" {
+		if text := strings.TrimSpace(v); text != "" && text != strings.TrimSpace(claudeCodeSystemPrompt) {
 			return []map[string]any{{"type": "text", "text": text}}
 		}
 	case []any:
@@ -894,7 +894,7 @@ func systemInstructionBlocks(system any) []map[string]any {
 				continue
 			}
 			text, ok := m["text"].(string)
-			if !ok || strings.TrimSpace(text) == "" {
+			if !ok || strings.TrimSpace(text) == "" || strings.TrimSpace(text) == strings.TrimSpace(claudeCodeSystemPrompt) {
 				continue
 			}
 			block := map[string]any{"type": "text", "text": text}
@@ -944,12 +944,8 @@ func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expa
 
 	// 3. 将原始 system prompt 作为 user/assistant 消息对注入到 messages 开头
 	//    模型仍通过 messages 接收完整指令，保留客户端功能
-	ccPromptTrimmed := strings.TrimSpace(claudeCodeSystemPrompt)
-	var firstInstruction string
 	if len(instructionBlocks) > 0 {
-		firstInstruction, _ = instructionBlocks[0]["text"].(string)
-	}
-	if len(instructionBlocks) > 0 && (len(instructionBlocks) != 1 || strings.TrimSpace(firstInstruction) != ccPromptTrimmed) {
+		firstInstruction, _ := instructionBlocks[0]["text"].(string)
 		instructionBlocks[0]["text"] = "[System Instructions]\n" + firstInstruction
 		instrMsg, err1 := json.Marshal(map[string]any{
 			"role":    "user",

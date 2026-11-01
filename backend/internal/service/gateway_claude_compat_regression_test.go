@@ -203,6 +203,9 @@ func TestClaudeRepairSystemBannerThroughForwardAndControls(t *testing.T) {
 			if kept != tc.wantKept {
 				t.Fatalf("rule retained=%t want=%t; outgoing body=%s", kept, tc.wantKept, upstream.lastBody)
 			}
+			if count := strings.Count(string(upstream.lastBody), claudeCodeSystemPrompt); count != 1 {
+				t.Fatalf("identity banner must appear once; got %d: %s", count, upstream.lastBody)
+			}
 			t.Logf("actual outgoing rule retained=%t", kept)
 		})
 	}

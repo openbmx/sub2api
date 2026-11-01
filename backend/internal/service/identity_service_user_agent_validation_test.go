@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -262,4 +263,41 @@ func TestGetOrCreateFingerprintHealingPreservesKnownClaudeSDK(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "known-sdk", fp.StainlessPackageVersion)
 	require.Equal(t, "known-node", fp.StainlessRuntimeVersion)
+}
+
+type fingerprintWriteFailureCache struct {
+	stubIdentityCache
+}
+
+func (c *fingerprintWriteFailureCache) SetFingerprint(context.Context, int64, *Fingerprint) error {
+	return errors.New("identity cache is read-only")
+}
+
+func TestFingerprintMutationRequiresSuccessfulPersistence(t *testing.T) {
+	for _, tc := range []struct {
+		name, cachedUA, clientUA string
+	}{
+		{"heal foreign client", "httpx/0.28.1", defaultFingerprint().UserAgent},
+		{"heal invalid Claude client", "claude-cli/999.0.0-local", defaultFingerprint().UserAgent},
+		{"upgrade Claude client", defaultFingerprint().UserAgent, "claude-cli/2.9.0 (external, cli)"},
+		{"raise version floor", "claude-cli/2.1.22 (external, cli)", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cached := &Fingerprint{ClientID: "stable-device", UserAgent: tc.cachedUA, UpdatedAt: time.Now().Unix()}
+			cache := &fingerprintWriteFailureCache{stubIdentityCache: stubIdentityCache{fingerprint: cached}}
+			fp, err := NewIdentityService(cache).GetOrCreateFingerprint(context.Background(), 1, headersWithUA(tc.clientUA))
+			require.Error(t, err)
+			require.Nil(t, fp, "an unpersisted identity must not reach the gateway")
+			require.Equal(t, tc.cachedUA, cached.UserAgent)
+		})
+	}
+}
+
+func TestFingerprintTTLWriteFailureKeepsExistingIdentity(t *testing.T) {
+	cached := &Fingerprint{ClientID: "stable-device", UserAgent: defaultFingerprint().UserAgent, UpdatedAt: time.Now().Add(-48 * time.Hour).Unix()}
+	cache := &fingerprintWriteFailureCache{stubIdentityCache: stubIdentityCache{fingerprint: cached}}
+	fp, err := NewIdentityService(cache).GetOrCreateFingerprint(context.Background(), 1, http.Header{})
+	require.NoError(t, err, "renewal does not change the identity already stored")
+	require.Equal(t, cached.ClientID, fp.ClientID)
+	require.Equal(t, cached.UserAgent, fp.UserAgent)
 }

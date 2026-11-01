@@ -4,10 +4,10 @@ Claude Messages、Chat Completions 和 Responses 共用以下转发规则。
 
 - Vertex service account 的 `count_tokens` 返回 404，让客户端使用本地估算。服务不会为此获取 Google token，也不会将凭据发给 Anthropic。请求参数校验仍先执行。
 - 工具名只在当前账号尝试的协议工具字段中还原。普通正文、代码、工具参数和 ID 保持原文；换号会清除前一次映射。
-- 第三方 OAuth 请求迁移原 system 时，保留附加规则、文本块边界及客户端缓存 TTL，随后仍执行现有的四个缓存断点上限。正常原生 Claude Code 流量继续走原生路径。
+- 第三方 OAuth 请求迁移原 system 时，保留附加规则、文本块边界及客户端缓存 TTL，并去掉重复的独立身份 banner，随后仍执行现有的四个缓存断点上限。正常原生 Claude Code 流量继续走原生路径。
 - 合成 session ID 使用改写前的首条用户消息。同一对话追加消息时保持稳定；账号原有的 session masking 选项继续按其配置生效。
 - 账号 Claude 身份不再从普通 HTTP/Python 客户端学习。已有非 Claude 缓存项会纠正并保留 ClientID；已有 Claude 缓存的合法 SDK 信息不会因缺失请求头被默认值覆盖。
-- 多实例并发首次请求通过 Redis 原子创建使用同一个 ClientID。身份改写启用时，缓存读取或初始化失败会返回错误并阻止出站；显式关闭指纹统一并开启 metadata 透传时，不依赖该身份缓存。
+- 多实例并发首次请求通过 Redis 原子创建使用同一个 ClientID。身份改写启用时，缓存读取、初始化或身份变更持久化失败会返回错误并阻止出站；显式关闭指纹统一并开启 metadata 透传时，不依赖该身份缓存。
 - TLS 客户端按有效模板内容分别缓存。更换模板会使用新指纹，重新选中同一模板可复用连接；随机模板 `-1` 在账号编辑保存后继续保留。
 - HTTP、HTTPS CONNECT 和 SOCKS5 代理均使用选定的目标 TLS 指纹。HTTPS 代理先进行独立的代理 TLS 验证，再建立 CONNECT 隧道；两段证书校验保持启用。
 - 指纹传输当前使用 HTTP/1.1。新建、更新及运行时均明确拒绝包含 `h2`/`h2c` 的模板，避免协商 HTTP/2 后发送 HTTP/1.1。已有此类模板需要将 ALPN 改为 `http/1.1` 或留空使用默认值。
