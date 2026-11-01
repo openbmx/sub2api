@@ -34,6 +34,15 @@ func (s *stubIdentityCache) SetFingerprint(_ context.Context, _ int64, fp *Finge
 	return nil
 }
 
+func (s *stubIdentityCache) GetOrCreateFingerprint(ctx context.Context, id int64, fp *Fingerprint) (*Fingerprint, error) {
+	if s.fingerprint == nil {
+		if err := s.SetFingerprint(ctx, id, fp); err != nil {
+			return nil, err
+		}
+	}
+	return s.GetFingerprint(ctx, id)
+}
+
 func (s *stubIdentityCache) GetMaskedSessionID(_ context.Context, _ int64) (string, error) {
 	return "", nil
 }
@@ -236,4 +245,21 @@ func TestGetOrCreateFingerprintMissingUserAgentKeepsDefault(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, defaultFingerprint().UserAgent, fp.UserAgent)
+}
+
+func TestGetOrCreateFingerprintHealsForeignClientCache(t *testing.T) {
+	cache := &stubIdentityCache{fingerprint: &Fingerprint{ClientID: "stable-device-id", UserAgent: "httpx/0.28.1", StainlessLang: "python", UpdatedAt: time.Now().Unix()}}
+	fp, err := NewIdentityService(cache).GetOrCreateFingerprint(context.Background(), 1, headersWithUA(defaultFingerprint().UserAgent))
+	require.NoError(t, err)
+	require.Equal(t, "stable-device-id", fp.ClientID)
+	require.Equal(t, defaultFingerprint().UserAgent, fp.UserAgent)
+	require.Equal(t, "js", fp.StainlessLang)
+}
+
+func TestGetOrCreateFingerprintHealingPreservesKnownClaudeSDK(t *testing.T) {
+	cache := &stubIdentityCache{fingerprint: &Fingerprint{UserAgent: "claude-cli/999.0.0-local", ClientID: "stable-device-id", StainlessPackageVersion: "known-sdk", StainlessRuntimeVersion: "known-node", UpdatedAt: time.Now().Unix()}}
+	fp, err := NewIdentityService(cache).GetOrCreateFingerprint(context.Background(), 1, headersWithUA(defaultFingerprint().UserAgent))
+	require.NoError(t, err)
+	require.Equal(t, "known-sdk", fp.StainlessPackageVersion)
+	require.Equal(t, "known-node", fp.StainlessRuntimeVersion)
 }

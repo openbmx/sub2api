@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -18,14 +19,20 @@ var ccVersionWithFingerprintInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d
 // OAuth mimicry 强制使用调用方传入的 mimicUserAgent（与出站 User-Agent 头同源、
 // 同一次请求内取一次复用，保证 cc_version 与出站头版本严格一致），
 // 其余情况使用账号指纹 UA。
-func effectiveBillingUserAgent(mimicUserAgent, tokenType string, mimicClaudeCode bool, fingerprint *Fingerprint) string {
+func effectiveBillingUserAgent(mimicUserAgent, tokenType string, mimicClaudeCode bool, fingerprint *Fingerprint, clientHeaders http.Header) string {
 	if tokenType == "oauth" && mimicClaudeCode {
 		return mimicUserAgent
 	}
-	if fingerprint == nil {
-		return ""
+	if fingerprint != nil && fingerprint.UserAgent != "" {
+		return fingerprint.UserAgent
 	}
-	return fingerprint.UserAgent
+	if tokenType == "oauth" {
+		if ua := getHeaderRaw(clientHeaders, "User-Agent"); ua != "" {
+			return ua
+		}
+		return mimicUserAgent
+	}
+	return ""
 }
 
 // syncBillingHeaderVersion rewrites cc_version in x-anthropic-billing-header

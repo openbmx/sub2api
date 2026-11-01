@@ -378,7 +378,7 @@ func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account
 //   - systemRaw：body 中原始 system 字段（用于判断是否需要 rewrite）。
 //   - model：最终会发给上游的模型 ID（用于模型规范化 + metadata 版本选择）。
 //
-// 返回：改写后的 body。即使中间任何一步失败，也会退化成原 body（不会 panic）。
+// Returns an error when the configured shared identity cannot be loaded.
 func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	ctx context.Context,
 	c *gin.Context,
@@ -386,32 +386,35 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	body []byte,
 	systemRaw any,
 	model string,
-) []byte {
+) ([]byte, error) {
 	if account == nil || !account.IsOAuth() || len(body) == 0 {
-		return body
-	}
-
-	systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
-	if systemPromptInjectionEnabled {
-		systemPromptBlocks = claudeOAuthSystemPromptBlocksForModel(model, systemPromptBlocks)
-		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, normalizeSystemParam(systemRaw), systemPrompt, systemPromptBlocks)
+		return body, nil
 	}
 
 	normalizeOpts := claudeOAuthNormalizeOptions{}
 
-	if s.identityService != nil && c != nil && c.Request != nil {
-		if fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header); err == nil && fp != nil {
-			mimicMPT := false
-			if s.settingService != nil {
-				_, mimicMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
-			}
-			if !mimicMPT {
-				if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body); uid != "" {
-					normalizeOpts.injectMetadata = true
-					normalizeOpts.metadataUserID = uid
-				}
+	mimicMPT := false
+	if s.settingService != nil {
+		_, mimicMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
+	}
+	if s.identityService != nil && c != nil && c.Request != nil && !mimicMPT {
+		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
+		if err != nil {
+			return nil, fmt.Errorf("load Claude account identity: %w", err)
+		}
+		if fp != nil {
+			if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body); uid != "" {
+				normalizeOpts.injectMetadata = true
+				normalizeOpts.metadataUserID = uid
 			}
 		}
+	}
+
+	// The synthetic instruction message must not become the session seed.
+	systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
+	if systemPromptInjectionEnabled {
+		systemPromptBlocks = claudeOAuthSystemPromptBlocksForModel(model, systemPromptBlocks)
+		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, normalizeSystemParam(systemRaw), systemPrompt, systemPromptBlocks)
 	}
 
 	body, _ = normalizeClaudeOAuthRequestBody(body, model, normalizeOpts)
@@ -420,7 +423,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	// 对齐 Parrot transform_request 里剩余的字段级改写。顺序有语义约束：
 	//   1) messages cache：仅在配置开启时清除客户端断点并注入代理断点
 	//   2) tool rewrite：最后改 tools[*].name / tool_choice.name 并在 tools[-1]
-	//      上打断点；mapping 存入 gin.Context 供响应侧 bytes.Replace 还原。
+	//      上打断点；mapping 存入 gin.Context 供响应侧精确还原工具名。
 	body = s.rewriteMessageCacheControlIfEnabled(ctx, body)
 
 	if rw := buildToolNameRewriteFromBody(body); rw != nil {
@@ -432,7 +435,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 		body = applyToolsLastCacheBreakpoint(body)
 	}
 
-	return body
+	return body, nil
 }
 
 // buildOAuthMetadataUserIDFromBody 是 buildOAuthMetadataUserID 的变体，
@@ -877,13 +880,14 @@ func ValidateClaudeOAuthSystemPromptBlocksConfig(raw string) error {
 	return nil
 }
 
-func extractSystemTextAndCacheControl(system any) (string, any) {
+func systemInstructionBlocks(system any) []map[string]any {
 	switch v := system.(type) {
 	case string:
-		return strings.TrimSpace(v), nil
+		if text := strings.TrimSpace(v); text != "" {
+			return []map[string]any{{"type": "text", "text": text}}
+		}
 	case []any:
-		var parts []string
-		var cacheControl any
+		var blocks []map[string]any
 		for _, item := range v {
 			m, ok := item.(map[string]any)
 			if !ok {
@@ -893,18 +897,15 @@ func extractSystemTextAndCacheControl(system any) (string, any) {
 			if !ok || strings.TrimSpace(text) == "" {
 				continue
 			}
-			parts = append(parts, text)
-			// system blocks are collapsed into one messages text block below.
-			// Preserve the last original breakpoint as the closest equivalent
-			// boundary, including its client-selected TTL.
+			block := map[string]any{"type": "text", "text": text}
 			if cc, exists := m["cache_control"]; exists && cc != nil {
-				cacheControl = cc
+				block["cache_control"] = cc
 			}
+			blocks = append(blocks, block)
 		}
-		return strings.Join(parts, "\n\n"), cacheControl
-	default:
-		return "", nil
+		return blocks
 	}
+	return nil
 }
 
 func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expansionPrompt string, blocksConfig string) []byte {
@@ -912,7 +913,7 @@ func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expa
 	expansionPrompt = defaultClaudeOAuthExpansionPrompt(expansionPrompt)
 
 	// 1. 提取原始 system prompt 文本及其缓存断点
-	originalSystemText, originalSystemCacheControl := extractSystemTextAndCacheControl(system)
+	instructionBlocks := systemInstructionBlocks(system)
 
 	// 2. 构造 system 数组，对齐真实 Claude Code CLI 的 3-block 形态：
 	//    [0] billing attribution block（cc_version={cliVer}.{fp}; cc_entrypoint=cli;）
@@ -944,19 +945,15 @@ func rewriteSystemForNonClaudeCodeWithPromptBlocks(body []byte, system any, expa
 	// 3. 将原始 system prompt 作为 user/assistant 消息对注入到 messages 开头
 	//    模型仍通过 messages 接收完整指令，保留客户端功能
 	ccPromptTrimmed := strings.TrimSpace(claudeCodeSystemPrompt)
-	if originalSystemText != "" && originalSystemText != ccPromptTrimmed && !hasClaudeCodePrefix(originalSystemText) {
-		instructionBlock := map[string]any{
-			"type": "text",
-			"text": "[System Instructions]\n" + originalSystemText,
-		}
-		if originalSystemCacheControl != nil {
-			instructionBlock["cache_control"] = originalSystemCacheControl
-		}
+	var firstInstruction string
+	if len(instructionBlocks) > 0 {
+		firstInstruction, _ = instructionBlocks[0]["text"].(string)
+	}
+	if len(instructionBlocks) > 0 && (len(instructionBlocks) != 1 || strings.TrimSpace(firstInstruction) != ccPromptTrimmed) {
+		instructionBlocks[0]["text"] = "[System Instructions]\n" + firstInstruction
 		instrMsg, err1 := json.Marshal(map[string]any{
-			"role": "user",
-			"content": []map[string]any{
-				instructionBlock,
-			},
+			"role":    "user",
+			"content": instructionBlocks,
 		})
 		ackMsg, err2 := json.Marshal(map[string]any{
 			"role": "assistant",

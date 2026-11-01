@@ -18,6 +18,9 @@ func (s *identityCacheStub) GetFingerprint(_ context.Context, _ int64) (*Fingerp
 func (s *identityCacheStub) SetFingerprint(_ context.Context, _ int64, _ *Fingerprint) error {
 	return nil
 }
+func (s *identityCacheStub) GetOrCreateFingerprint(_ context.Context, _ int64, fp *Fingerprint) (*Fingerprint, error) {
+	return fp, nil
+}
 func (s *identityCacheStub) GetMaskedSessionID(_ context.Context, _ int64) (string, error) {
 	return s.maskedSessionID, nil
 }

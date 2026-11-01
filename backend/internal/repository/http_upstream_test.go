@@ -96,17 +96,13 @@ func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredSOCKSProxy(t *testing.T) {
 	require.Equal(t, int64(1), upstreamCalls.Load())
 }
 
-func TestTLSFingerprintHTTPSProxyFallsBackWithoutBypassingProxy(t *testing.T) {
+func TestTLSFingerprintHTTPSProxyUsesFingerprintTunnel(t *testing.T) {
 	proxyURL, err := url.Parse("https://user:pass@proxy.example:8443")
 	require.NoError(t, err)
 	transport, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "test"})
 	require.NoError(t, err)
-	require.NotNil(t, transport.Proxy)
-	require.Nil(t, transport.DialTLSContext)
-	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "upstream.example"}}
-	resolved, err := transport.Proxy(req)
-	require.NoError(t, err)
-	require.Equal(t, "https://user:pass@proxy.example:8443", resolved.String())
+	require.Nil(t, transport.Proxy)
+	require.NotNil(t, transport.DialTLSContext)
 }
 
 func startTestSOCKS5Proxy(t *testing.T) (string, *atomic.Int64) {
@@ -1044,4 +1040,25 @@ func TestHTTPUpstreamPublicHostsOnlyValidatesEveryRedirectHop(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, client.CheckRedirect(publicHop, via))
 	require.Error(t, client.CheckRedirect(publicHop, make([]*http.Request, 10)), "redirect chain stays capped")
+}
+
+func TestTLSFingerprintTransportRejectsUnsupportedHTTP2ALPN(t *testing.T) {
+	_, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, nil, &tlsfingerprint.Profile{Name: "legacy-h2", ALPNProtocols: []string{"h2", "http/1.1"}})
+	require.Error(t, err, "existing stored profiles must not negotiate H2 on an HTTP/1 transport")
+}
+
+func TestTLSFingerprintProfilesKeepSeparateReusableClients(t *testing.T) {
+	upstream, ok := NewHTTPUpstream(nil).(*httpUpstreamService)
+	require.True(t, ok)
+	a := &tlsfingerprint.Profile{Name: "A", CipherSuites: []uint16{0x1301}}
+	b := &tlsfingerprint.Profile{Name: "B", CipherSuites: []uint16{0x1302}}
+	first, err := upstream.getClientEntryWithTLS("", 904, 1, a, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(t, err)
+	second, err := upstream.getClientEntryWithTLS("", 904, 1, b, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(t, err)
+	again, err := upstream.getClientEntryWithTLS("", 904, 1, a, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(t, err)
+	require.NotSame(t, first, second)
+	require.Same(t, first, again, "returning to a profile must reuse its existing client")
+	require.Len(t, upstream.clients, 2)
 }

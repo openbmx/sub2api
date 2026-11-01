@@ -32,6 +32,9 @@ func (p *TLSFingerprintProfile) Validate() error {
 	if p.Name == "" {
 		return &ValidationError{Field: "name", Message: "name is required"}
 	}
+	if err := p.ToTLSProfile().ValidateHTTP1(); err != nil {
+		return &ValidationError{Field: "alpn_protocols", Message: err.Error()}
+	}
 	return nil
 }
 

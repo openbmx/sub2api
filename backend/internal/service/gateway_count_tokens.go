@@ -60,9 +60,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody, passthroughModel)
 	}
 
-	// Bedrock 不支持 count_tokens 端点
-	if account != nil && account.IsBedrock() {
-		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for Bedrock")
+	// These credentials require a different protocol; reject before token lookup.
+	if account != nil && (account.IsBedrock() || account.Type == AccountTypeServiceAccount) {
+		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for this account type")
 		return nil
 	}
 
@@ -501,16 +501,23 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		ctEnableFP, ctEnableMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
 	var ctFingerprint *Fingerprint
-	if account.IsOAuth() && s.identityService != nil {
+	ctMimicUserAgent := claude.DefaultUserAgent()
+	if account.IsOAuth() && s.identityService != nil && (ctEnableFP || !ctEnableMPT) {
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
-		if err == nil {
-			ctFingerprint = fp
-			if !ctEnableMPT {
-				accountUUID := account.GetExtraString("account_uuid")
-				if accountUUID != "" && fp.ClientID != "" {
-					if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, fp.UserAgent); err == nil && len(newBody) > 0 {
-						body = newBody
-					}
+		if err != nil {
+			return nil, nil, fmt.Errorf("load Claude account identity: %w", err)
+		}
+		ctFingerprint = fp
+		if !ctEnableMPT {
+			accountUUID := account.GetExtraString("account_uuid")
+			if accountUUID != "" && fp.ClientID != "" {
+				wireFingerprint := ctFingerprint
+				if !ctEnableFP {
+					wireFingerprint = nil
+				}
+				wireUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, wireFingerprint, clientHeaders)
+				if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, wireUA); err == nil && len(newBody) > 0 {
+					body = newBody
 				}
 			}
 		}
@@ -523,9 +530,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 	// 一致性铁律：同一次请求内只取一次 mimic UA，billing cc_version 与出站
 	// User-Agent 头共用这一个字符串（同 buildUpstreamRequest）。
-	ctMimicUserAgent := claude.DefaultUserAgent()
-	if billingUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, billingFingerprint); billingUA != "" {
-		body = syncBillingHeaderVersion(body, billingUA)
+	wireUserAgent := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, billingFingerprint, clientHeaders)
+	if wireUserAgent != "" {
+		body = syncBillingHeaderVersion(body, wireUserAgent)
 	}
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
@@ -586,6 +593,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 	if tokenType == "oauth" {
+		setHeaderRaw(req.Header, "User-Agent", wireUserAgent)
 		applyClaudeOAuthHeaderDefaults(req)
 	}
 

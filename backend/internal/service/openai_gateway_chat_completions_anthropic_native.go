@@ -41,6 +41,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	clearToolNameRewrite(c)
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request

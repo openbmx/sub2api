@@ -313,6 +313,7 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 		wantMessagesLen  int    // messages 数组长度
 		wantFirstMsgRole string // 第一条消息的 role
 		wantFirstMsgText string // 第一条消息的 content[0].text
+		wantFirstBlocks  int
 		wantAckMsgText   string // 第二条消息的 content[0].text
 	}{
 		{
@@ -356,7 +357,8 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 			wantSystemText:   claudeCodeSystemPrompt,
 			wantMessagesLen:  3,
 			wantFirstMsgRole: "user",
-			wantFirstMsgText: "[System Instructions]\nFirst instruction\n\nSecond instruction",
+			wantFirstMsgText: "[System Instructions]\nFirst instruction",
+			wantFirstBlocks:  2,
 			wantAckMsgText:   "Understood. I will follow these instructions.",
 		},
 		{
@@ -448,7 +450,11 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 
 				firstContent, ok := firstMsg["content"].([]any)
 				require.True(t, ok)
-				require.Len(t, firstContent, 1)
+				wantBlocks := tt.wantFirstBlocks
+				if wantBlocks == 0 {
+					wantBlocks = 1
+				}
+				require.Len(t, firstContent, wantBlocks)
 				firstBlock, ok := firstContent[0].(map[string]any)
 				require.True(t, ok)
 				require.Equal(t, tt.wantFirstMsgText, firstBlock["text"])

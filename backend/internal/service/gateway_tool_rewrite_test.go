@@ -43,27 +43,20 @@ func TestSanitizeToolName_DynamicTakesPrecedence(t *testing.T) {
 	require.Equal(t, "analyze_ses00", got, "dynamic mapping wins over static prefix")
 }
 
-func TestRestoreToolNamesInBytes_LongestFirst(t *testing.T) {
-	// 当假名 "abc_12" 是另一个更长假名的子串（真实场景极少但算法必须防御）时，
-	// 长的必须先替换。本测试用显式构造的映射来验证排序不变量。
+func TestRestoreToolNamesInBytes_ExactNames(t *testing.T) {
 	rw := &ToolNameRewrite{
 		Forward: map[string]string{"foo": "abc_12", "bar": "abc_12_ext"},
 		Reverse: map[string]string{"abc_12": "foo", "abc_12_ext": "bar"},
 	}
-	// 手工构造 ReverseOrdered：长的在前
-	rw.ReverseOrdered = [][2]string{
-		{"abc_12_ext", "bar"},
-		{"abc_12", "foo"},
-	}
-	data := []byte(`{"tool":"abc_12_ext","other":"abc_12"}`)
+	data := []byte(`{"content":[{"type":"tool_use","name":"abc_12_ext"},{"type":"tool_use","name":"abc_12"}],"text":"abc_12_ext"}`)
 	restored := string(restoreToolNamesInBytes(data, rw))
-	require.Equal(t, `{"tool":"bar","other":"foo"}`, restored)
+	require.Equal(t, `{"content":[{"type":"tool_use","name":"bar"},{"type":"tool_use","name":"foo"}],"text":"abc_12_ext"}`, restored)
 }
 
-func TestRestoreToolNamesInBytes_StaticPrefixRollback(t *testing.T) {
+func TestRestoreToolNamesInBytes_NoMappingPreservesStaticPrefixes(t *testing.T) {
 	data := []byte(`{"name":"sessions_list","id":"cc_ses_xyz"}`)
 	got := string(restoreToolNamesInBytes(data, nil))
-	require.Equal(t, `{"name":"sessions_list","id":"session_xyz"}`, got)
+	require.Equal(t, string(data), got)
 }
 
 func TestApplyToolNameRewriteToBody_RenamesToolsAndToolChoice(t *testing.T) {
@@ -251,25 +244,6 @@ func TestRewriteMessageCacheControlIfEnabled_OptInPreservesLegacyRewrite(t *test
 	require.Equal(t, "5m", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
 	require.False(t, gjson.GetBytes(out, "messages.2.content.0.cache_control").Exists())
 	require.Equal(t, "5m", gjson.GetBytes(out, "messages.3.content.0.cache_control.ttl").String())
-}
-
-func TestBuildToolNameRewriteFromBody_ReverseOrderedByLengthDesc(t *testing.T) {
-	// 超过阈值触发动态映射，验证 ReverseOrdered 按假名长度倒序排列
-	body := []byte(`{"tools":[
-        {"name":"t1","input_schema":{}},
-        {"name":"t2","input_schema":{}},
-        {"name":"t3","input_schema":{}},
-        {"name":"t4","input_schema":{}},
-        {"name":"t5","input_schema":{}},
-        {"name":"t6","input_schema":{}}
-    ]}`)
-	rw := buildToolNameRewriteFromBody(body)
-	require.NotNil(t, rw)
-	require.NotEmpty(t, rw.ReverseOrdered)
-	for i := 1; i < len(rw.ReverseOrdered); i++ {
-		require.GreaterOrEqual(t, len(rw.ReverseOrdered[i-1][0]), len(rw.ReverseOrdered[i][0]),
-			"ReverseOrdered must be sorted by fake-name length descending")
-	}
 }
 
 func TestRestoreToolNamesInBytes_NoMapping_NoStaticMatch_IsNoop(t *testing.T) {

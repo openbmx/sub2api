@@ -38,6 +38,9 @@ func NewIdentityCache(rdb *redis.Client) service.IdentityCache {
 func (c *identityCache) GetFingerprint(ctx context.Context, accountID int64) (*service.Fingerprint, error) {
 	key := fingerprintKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +58,25 @@ func (c *identityCache) SetFingerprint(ctx context.Context, accountID int64, fp 
 		return err
 	}
 	return c.rdb.Set(ctx, key, val, fingerprintTTL).Err()
+}
+
+func (c *identityCache) GetOrCreateFingerprint(ctx context.Context, accountID int64, fp *service.Fingerprint) (*service.Fingerprint, error) {
+	val, err := json.Marshal(fp)
+	if err != nil {
+		return nil, err
+	}
+	created, err := c.rdb.SetNX(ctx, fingerprintKey(accountID), val, fingerprintTTL).Result()
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		return fp, nil
+	}
+	existing, err := c.GetFingerprint(ctx, accountID)
+	if err == nil && existing == nil {
+		err = fmt.Errorf("fingerprint initialization lost for account %d", accountID)
+	}
+	return existing, err
 }
 
 func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64) (string, error) {
