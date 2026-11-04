@@ -32,6 +32,13 @@ func ClaudeCodeSessionIDFromHeader(c *gin.Context) string {
 	return sanitizeSessionID(c.GetHeader(claudeCodeSessionHeader))
 }
 
+func claudeForwardConversationID(c *gin.Context) string {
+	if id := ClaudeCodeSessionIDFromHeader(c); id != "" {
+		return id
+	}
+	return sanitizeSessionID(explicitOpenAIHeaderSessionID(c))
+}
+
 // ExtractClientSessionID resolves the explicit client-provided session identifier from
 // request headers for usage-log correlation and returns it sanitized. It is
 // protocol-agnostic and shared by every gateway handler so all supported protocols

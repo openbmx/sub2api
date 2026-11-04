@@ -51,6 +51,7 @@ type SessionContext struct {
 	ClientIP  string
 	UserAgent string
 	APIKeyID  int64
+	SessionID string
 }
 
 type jsonRange struct {

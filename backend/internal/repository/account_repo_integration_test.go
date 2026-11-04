@@ -1292,6 +1292,101 @@ func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_AppliesAndP
 	s.Require().Equal(1, outboxCount)
 }
 
+func (s *AccountRepoSuite) TestClaudeRefreshKeepsConcurrentConfigurationAndReauthorization() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "claude-refresh-conditional", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "old", "refresh_token": "old-refresh", "model_mapping": map[string]any{"alias": "before"}}})
+	observed, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().NoError(s.repo.UpdateCredentials(s.ctx, account.ID, map[string]any{"access_token": "old", "refresh_token": "old-refresh", "model_mapping": map[string]any{"alias": "edited"}}))
+	applied, err := s.repo.UpdateClaudeOAuthCredentialsIfUnchanged(s.ctx, account.ID, observed.Credentials, map[string]any{"access_token": "rotated", "refresh_token": "rotated-refresh"})
+	s.Require().NoError(err)
+	s.Require().True(applied)
+	current, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("rotated", current.GetCredential("access_token"))
+	s.Require().Equal(map[string]string{"alias": "edited"}, current.GetModelMapping())
+	s.Require().NoError(s.repo.UpdateCredentials(s.ctx, account.ID, map[string]any{"access_token": "reauthorized", "refresh_token": "reauthorized-refresh"}))
+	applied, err = s.repo.UpdateClaudeOAuthCredentialsIfUnchanged(s.ctx, account.ID, current.Credentials, map[string]any{"access_token": "stale", "refresh_token": "stale-refresh"})
+	s.Require().NoError(err)
+	s.Require().False(applied)
+	latest, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("reauthorized", latest.GetCredential("access_token"))
+}
+
+func (s *AccountRepoSuite) TestClaudeRefreshFailureAndRecoveryPreserveNewerState() {
+	for _, permanent := range []bool{false, true} {
+		s.Run(map[bool]string{false: "cooldown", true: "permanent"}[permanent], func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "claude-refresh-state", Platform: service.PlatformAnthropic, Type: service.AccountTypeSetupToken, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "old", "refresh_token": "same-refresh"}})
+			observed, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().NoError(s.repo.UpdateCredentials(s.ctx, account.ID, map[string]any{"access_token": "reauthorized", "refresh_token": "same-refresh"}))
+			until := time.Now().Add(time.Hour)
+			var cooldown *time.Time
+			if !permanent {
+				cooldown = &until
+			}
+			applied, err := s.repo.SetClaudeOAuthRefreshFailureIfUnchanged(s.ctx, observed, "token refresh retry exhausted", cooldown)
+			s.Require().NoError(err)
+			s.Require().False(applied)
+			current, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			applied, err = s.repo.SetClaudeOAuthRefreshFailureIfUnchanged(s.ctx, current, "token refresh retry exhausted", cooldown)
+			s.Require().NoError(err)
+			s.Require().True(applied)
+			failed, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			if permanent {
+				s.Require().Equal(service.StatusError, failed.Status)
+				s.Require().True(failed.Schedulable)
+				s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "operator investigation"))
+			} else {
+				s.Require().NotNil(failed.TempUnschedulableUntil)
+				s.Require().NoError(s.repo.SetTempUnschedulable(s.ctx, account.ID, until.Add(time.Hour), "operator pause"))
+			}
+			applied, err = s.repo.ClearClaudeOAuthStateIfUnchanged(s.ctx, failed, permanent, !permanent)
+			s.Require().NoError(err)
+			s.Require().False(applied)
+			latest, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			if permanent {
+				s.Require().Equal("operator investigation", latest.ErrorMessage)
+			} else {
+				s.Require().Equal("operator pause", latest.TempUnschedulableReason)
+			}
+			applied, err = s.repo.ClearClaudeOAuthStateIfUnchanged(s.ctx, latest, permanent, !permanent)
+			s.Require().NoError(err)
+			s.Require().True(applied)
+			latest, err = s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal(service.StatusActive, latest.Status)
+			s.Require().Empty(latest.ErrorMessage)
+			s.Require().Nil(latest.TempUnschedulableUntil)
+		})
+	}
+}
+
+func (s *AccountRepoSuite) TestClaudeRefreshStateRollsBackWhenOutboxFails() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "claude-refresh-outbox", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "old", "refresh_token": "refresh"}})
+	observed, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	repo := newAccountRepositoryWithSQL(s.client, &failAtomicSchedulerOutboxSQLExecutor{sqlExecutor: s.repo.sql}, nil)
+	applied, err := repo.SetClaudeOAuthRefreshFailureIfUnchanged(s.ctx, observed, "invalid_grant", nil)
+	s.Require().Error(err)
+	s.Require().False(applied)
+	current, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(service.StatusActive, current.Status)
+	s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "OAuth 401: expired"))
+	current, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	applied, err = repo.ClearClaudeOAuthStateIfUnchanged(s.ctx, current, true, false)
+	s.Require().Error(err)
+	s.Require().False(applied)
+	current, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(service.StatusError, current.Status)
+}
+
 func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_SkipsConcurrentReauthorization() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:        "grok-refresh-success-cas-reauthorized",

@@ -197,7 +197,7 @@ func (s *GatewayService) ForwardAsResponses(
 	var handleErr error
 	if clientStream {
 		writerSizeBeforeStream := c.Writer.Size()
-		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping, account.Platform == PlatformAnthropic)
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
@@ -206,7 +206,7 @@ func (s *GatewayService) ForwardAsResponses(
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}
 	} else {
-		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping, account.Platform == PlatformAnthropic)
 	}
 
 	return result, handleErr
@@ -381,6 +381,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	nativeClaude ...bool,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -487,7 +488,11 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	if isClaude55SignedThinkingModel(mappedModel) {
 		finalResp.Model = mappedModel
 	}
-	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	convertResponse := apicompat.AnthropicToResponsesResponse
+	if len(nativeClaude) > 0 && nativeClaude[0] {
+		convertResponse = apicompat.ClaudeToResponsesResponse
+	}
+	responsesResp := convertResponse(finalResp)
 	responsesResp.Model = originalModel // Use original model name
 
 	if s.responseHeaderFilter != nil {
@@ -532,6 +537,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	nativeClaude ...bool,
 ) (*ForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
@@ -546,7 +552,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
-	state.PreserveThinkingSignatures = isClaude55SignedThinkingModel(mappedModel)
+	state.PreserveThinkingSignatures = isClaude55SignedThinkingModel(mappedModel) || len(nativeClaude) > 0 && nativeClaude[0]
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
 	var usage ClaudeUsage
 	var firstTokenMs *int

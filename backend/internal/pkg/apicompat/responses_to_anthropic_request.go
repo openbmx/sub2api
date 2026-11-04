@@ -27,7 +27,7 @@ func responsesToAnthropicRequest(req *ResponsesRequest, nativeClaude bool) (*Ant
 	isSonnet55 := claude.IsSonnet55(req.Model)
 	isHaiku55 := claude.IsHaiku55(req.Model)
 	adaptive := isOpus55 || isSonnet55 || isHaiku55 || nativeClaude && claude.SupportsAdaptiveThinking(req.Model)
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, adaptive)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, adaptive || nativeClaude)
 	if err != nil {
 		return nil, err
 	}

@@ -261,6 +261,22 @@ func TestAccountRepository_UpdateGrokOAuthCredentialsIfUnchanged_UsesExactAttemp
 	require.Equal(t, &proxyID, exec.execArgs[0][5])
 }
 
+func TestAccountRepository_ClaudeRefreshMergesTokensWithAtomicOutbox(t *testing.T) {
+	executor := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+	repo := newAccountRepositoryWithSQL(nil, executor, nil)
+	applied, err := repo.UpdateClaudeOAuthCredentialsIfUnchanged(context.Background(), 42, map[string]any{"access_token": "old", "refresh_token": "old-refresh"}, map[string]any{"access_token": "new", "refresh_token": "rotated"})
+	require.NoError(t, err)
+	require.True(t, applied)
+	require.Len(t, executor.execQueries, 1)
+	sql := normalizeSQLWhitespace(executor.execQueries[0])
+	require.Contains(t, sql, "COALESCE(a.credentials, '{}'::jsonb) || $1::jsonb")
+	require.Contains(t, sql, "COALESCE(a.credentials ->> 'access_token', '') = $6")
+	require.Contains(t, sql, "COALESCE(a.credentials ->> 'refresh_token', '') = $7")
+	require.Contains(t, sql, "INSERT INTO scheduler_outbox")
+	require.Equal(t, "old", executor.execArgs[0][5])
+	require.Equal(t, "old-refresh", executor.execArgs[0][6])
+}
+
 func TestAccountRepository_ListOAuthRefreshCandidatePage_SQLFilter(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	require.NoError(t, err)

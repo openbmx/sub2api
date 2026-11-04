@@ -236,7 +236,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			}
 			if fp != nil {
 				// metadata 透传开启时跳过 metadata 注入
-				if metadataUserID := s.buildOAuthMetadataUserID(parsed, account, fp); metadataUserID != "" {
+				if metadataUserID := s.buildOAuthMetadataUserID(parsed, account, fp, claudeForwardConversationID(c)); metadataUserID != "" {
 					normalizeOpts.injectMetadata = true
 					normalizeOpts.metadataUserID = metadataUserID
 				}
@@ -244,7 +244,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 
 		systemRaw, _ := parsed.SystemValue()
-		normalizedBody, normalizedModel := s.rewriteClaudeOAuthInputBody(ctx, c, body, systemRaw, reqModel, normalizeOpts)
+		normalizedBody, normalizedModel := s.rewriteClaudeOAuthInputBody(ctx, c, account, body, systemRaw, reqModel, normalizeOpts)
 		if err := replaceBody(normalizedBody); err != nil {
 			return nil, err
 		}
@@ -995,6 +995,11 @@ func (s *GatewayService) sseStreamErrorEventFailover(ctx context.Context, c *gin
 	semanticStatus := http.StatusForbidden
 	if !outputStarted && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
 		semanticStatus = 529
+	}
+	stopped := s.claudeStoppedUpstreamError(ctx, c, account, &http.Response{
+		StatusCode: semanticStatus, Header: resp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(body)),
+	}, model)
+	if stopped == nil && semanticStatus == 529 {
 		syntheticResp := &http.Response{
 			StatusCode: semanticStatus,
 			Header:     resp.Header.Clone(),
@@ -1035,6 +1040,9 @@ func (s *GatewayService) sseStreamErrorEventFailover(ctx context.Context, c *gin
 		truncateString(rawData, 1000),
 	)
 
+	if stopped != nil {
+		return stopped
+	}
 	return &UpstreamFailoverError{
 		StatusCode:   semanticStatus,
 		ResponseBody: body,

@@ -115,6 +115,21 @@ type refreshAPIExecutorStub struct {
 	delay         time.Duration
 }
 
+func (r *refreshAPIAccountRepo) UpdateClaudeOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected, updates map[string]any) (bool, error) {
+	if r.beforeSuccessCAS != nil {
+		r.beforeSuccessCAS(r)
+	}
+	if r.account == nil || r.account.ID != id {
+		return false, nil
+	}
+	old := &Account{Credentials: expected}
+	if r.account.GetCredential("access_token") != old.GetCredential("access_token") || r.account.GetCredential("refresh_token") != old.GetCredential("refresh_token") {
+		return false, nil
+	}
+	err := r.UpdateCredentials(ctx, id, MergeCredentials(r.account.Credentials, updates))
+	return err == nil, err
+}
+
 func (e *refreshAPIExecutorStub) CanRefresh(account *Account) bool {
 	if e.cannotRefresh {
 		return false

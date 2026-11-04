@@ -122,3 +122,31 @@ func TestThirdPartyNativeSafetyFieldsKeepTheirOwnProtocol(t *testing.T) {
 	require.NotNil(t, request)
 	require.True(t, gjson.GetBytes(out, "safeguards").Exists())
 }
+
+func TestClaudeSystemMigrationKeepsWhitespaceAndNormalizesEnvironmentDate(t *testing.T) {
+	upstream := &anthropicHTTPUpstreamRecorder{resp: claudeRepairResponse("ok")}
+	svc := claudeRepairOAuthService(t, upstream, true)
+	body := []byte(`{"model":"claude-sonnet-4-6","system":"    code\nToday’s date is 2026/07/01.\n","messages":[{"role":"user","content":"hello"}],"max_tokens":1024}`)
+	c, _ := claudeRepairContext(body, "test-client/1.0")
+	_, err := svc.Forward(context.Background(), c, newAnthropicOAuthAccountForPartialUsageTest(), claudeRepairParse(t, body))
+	require.NoError(t, err)
+	require.Equal(t, "[System Instructions]\n    code\nToday's date is 2026-07-01.\n", gjson.GetBytes(upstream.lastBody, "messages.0.content.0.text").String())
+}
+
+func TestClaudeTokenCountFiltersTheSameReplayedHistory(t *testing.T) {
+	for _, account := range []*Account{newAnthropicOAuthAccountForPartialUsageTest(), newAnthropicAPIKeyAccountForTest()} {
+		t.Run(account.Type, func(t *testing.T) {
+			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":1}`))}}
+			svc := claudeRepairOAuthService(t, upstream, true)
+			body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":4096,"thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"search"},{"role":"assistant","content":[{"type":"thinking","thinking":"missing signature"},{"type":"server_tool_use","id":"srvtoolu_ws_demo","name":"web_search","input":{"query":"q"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_ws_demo","content":[]},{"type":"text","text":"answer"}]},{"role":"user","content":"continue"}]}`)
+			c, _ := claudeRepairContext(body, "test-client/1.0")
+			require.NoError(t, svc.ForwardCountTokens(context.Background(), c, account, claudeRepairParse(t, body)))
+			counted := append([]byte(nil), upstream.lastBody...)
+			upstream.resp = claudeRepairResponse("ok")
+			c, _ = claudeRepairContext(body, "test-client/1.0")
+			_, err := svc.Forward(context.Background(), c, account, claudeRepairParse(t, body))
+			require.NoError(t, err)
+			require.JSONEq(t, gjson.GetBytes(upstream.lastBody, "messages").Raw, gjson.GetBytes(counted, "messages").Raw)
+		})
+	}
+}

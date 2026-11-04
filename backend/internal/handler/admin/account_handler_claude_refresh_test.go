@@ -4,10 +4,15 @@ package admin
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,4 +47,31 @@ func TestClaudeVerifiedManualRefreshReactivatesItsAuthenticationError(t *testing
 			require.Empty(t, admin.input.Status)
 		}
 	}
+}
+
+type claudeReauthorizationAdmin struct {
+	*stubAdminService
+	broadRecoveryCalls int
+}
+
+func (s *claudeReauthorizationAdmin) ClearAccountError(context.Context, int64) (*service.Account, error) {
+	s.broadRecoveryCalls++
+	return s.getAccountResult, nil
+}
+
+func TestClaudeReauthorizationDoesNotInvokeBroadStateReset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	until := time.Now().Add(time.Hour)
+	base := newStubAdminService()
+	base.getAccountResult = &service.Account{ID: 1, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth, Status: service.StatusActive, RateLimitResetAt: &until, TempUnschedulableUntil: &until, TempUnschedulableReason: "operator pause", Credentials: map[string]any{"access_token": "old", "refresh_token": "old-refresh"}}
+	admin := &claudeReauthorizationAdmin{stubAdminService: base}
+	h := NewAccountHandler(admin, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.POST("/accounts/:id/apply-oauth-credentials", h.ApplyOAuthCredentials)
+	rec := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/accounts/1/apply-oauth-credentials", strings.NewReader(`{"type":"oauth","credentials":{"access_token":"new","refresh_token":"new-refresh"}}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, request)
+	require.Equal(t, 200, rec.Code)
+	require.Zero(t, admin.broadRecoveryCalls)
 }

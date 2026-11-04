@@ -323,7 +323,7 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 	return out, modelID
 }
 
-func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account *Account, fp *Fingerprint) string {
+func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account *Account, fp *Fingerprint, explicitSessions ...string) string {
 	if parsed == nil || account == nil {
 		return ""
 	}
@@ -347,6 +347,9 @@ func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account
 	var firstUserText string
 	if parsed.Body != nil {
 		firstUserText = extractFirstUserText(parsed.Body.Bytes())
+	}
+	if len(explicitSessions) > 0 && explicitSessions[0] != "" {
+		firstUserText = "explicit-session::" + explicitSessions[0]
 	}
 	seed := buildStableSessionSeed(account.ID, sessionContextDiscriminator(parsed.SessionContext), firstUserText)
 	sessionID := generateSessionUUID(seed)
@@ -403,7 +406,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 			return nil, fmt.Errorf("load Claude account identity: %w", err)
 		}
 		if fp != nil {
-			caller := &SessionContext{ClientIP: c.ClientIP(), UserAgent: c.GetHeader("User-Agent"), APIKeyID: getAPIKeyIDFromContext(c)}
+			caller := &SessionContext{ClientIP: c.ClientIP(), UserAgent: c.GetHeader("User-Agent"), APIKeyID: getAPIKeyIDFromContext(c), SessionID: claudeForwardConversationID(c)}
 			if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body, caller); uid != "" {
 				normalizeOpts.injectMetadata = true
 				normalizeOpts.metadataUserID = uid
@@ -411,11 +414,15 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 		}
 	}
 
-	body, _ = s.rewriteClaudeOAuthInputBody(ctx, c, body, systemRaw, model, normalizeOpts)
+	body, _ = s.rewriteClaudeOAuthInputBody(ctx, c, account, body, systemRaw, model, normalizeOpts)
 	return body, nil
 }
 
-func (s *GatewayService) rewriteClaudeOAuthInputBody(ctx context.Context, c *gin.Context, body []byte, systemRaw any, model string, opts claudeOAuthNormalizeOptions) ([]byte, string) {
+func (s *GatewayService) rewriteClaudeOAuthInputBody(ctx context.Context, c *gin.Context, account *Account, body []byte, systemRaw any, model string, opts claudeOAuthNormalizeOptions) ([]byte, string) {
+	if normalized, changed := s.normalizeClientDatelineIfEnabled(ctx, account, body); changed {
+		body = normalized
+		systemRaw = gjson.GetBytes(body, "system").Value()
+	}
 	enabled, prompt, blocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
 	if enabled {
 		blocks = claudeOAuthSystemPromptBlocksForModel(model, blocks)
@@ -473,7 +480,11 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 	if len(callers) > 0 && callers[0] != nil {
 		clientDiscriminator = sessionContextDiscriminator(callers[0])
 	}
-	seed := buildStableSessionSeed(account.ID, clientDiscriminator, extractFirstUserText(body))
+	anchor := extractFirstUserText(body)
+	if len(callers) > 0 && callers[0] != nil && callers[0].SessionID != "" {
+		anchor = "explicit-session::" + callers[0].SessionID
+	}
+	seed := buildStableSessionSeed(account.ID, clientDiscriminator, anchor)
 	sessionID := generateSessionUUID(seed)
 
 	var uaVersion string
@@ -884,7 +895,7 @@ func systemInstructionBlocks(system any) []map[string]any {
 	switch v := system.(type) {
 	case string:
 		if text := strings.TrimSpace(v); text != "" && text != strings.TrimSpace(claudeCodeSystemPrompt) {
-			return []map[string]any{{"type": "text", "text": text}}
+			return []map[string]any{{"type": "text", "text": v}}
 		}
 	case []any:
 		var blocks []map[string]any

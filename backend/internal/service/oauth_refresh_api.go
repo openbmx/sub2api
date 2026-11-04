@@ -261,10 +261,11 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultRefreshPostPersistCleanupTimeout)
 			defer cancel()
 			newCredentials["_token_version"] = time.Now().UnixMilli()
-			if err := persistAccountCredentials(cleanupCtx, api.accountRepo, freshAccount, newCredentials); err != nil {
-				return nil, fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, err)
+			current, applied, err := persistClaudeOAuthRefresh(cleanupCtx, api.accountRepo, attemptedAccount, newCredentials)
+			if err != nil {
+				return nil, err
 			}
-			return &OAuthRefreshResult{Refreshed: true, NewCredentials: newCredentials, Account: freshAccount}, nil
+			return &OAuthRefreshResult{Refreshed: applied, NewCredentials: newCredentials, Account: current}, nil
 		}
 		// A provider implementation may ignore cancellation and return late
 		// credentials. Never persist them after the attempt/cycle boundary.
@@ -359,6 +360,15 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
+		} else if freshAccount.Platform == PlatformAnthropic {
+			current, applied, err := persistClaudeOAuthRefresh(ctx, api.accountRepo, attemptedAccount, newCredentials)
+			if err != nil {
+				return nil, err
+			}
+			if !applied {
+				return &OAuthRefreshResult{Account: current}, nil
+			}
+			freshAccount = current
 		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
 			slog.Error("oauth_refresh_update_failed",
 				"account_id", freshAccount.ID,

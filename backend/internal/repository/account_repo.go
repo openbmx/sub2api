@@ -1679,6 +1679,126 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	return true, nil
 }
 
+func (r *accountRepository) UpdateClaudeOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected, updates map[string]any) (bool, error) {
+	if scoped := r.accountTransactionScope(ctx); scoped != r {
+		return scoped.UpdateClaudeOAuthCredentialsIfUnchanged(ctx, id, expected, updates)
+	}
+	if r.sql == nil {
+		return false, errors.New("account repository SQL executor is not configured")
+	}
+	attempted := &service.Account{Credentials: expected}
+	payload, err := json.Marshal(normalizeJSONMap(updates))
+	if err != nil {
+		return false, err
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts AS a
+			SET credentials = COALESCE(a.credentials, '{}'::jsonb) || $1::jsonb, updated_at = NOW()
+			WHERE a.id = $2 AND a.deleted_at IS NULL AND a.platform = $3
+				AND a.type IN ($4, $5)
+				AND COALESCE(a.credentials ->> 'access_token', '') = $6
+				AND COALESCE(a.credentials ->> 'refresh_token', '') = $7
+			RETURNING a.id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $8, updated.id, NULL, NULL FROM updated`, string(payload), id,
+		service.PlatformAnthropic, service.AccountTypeOAuth, service.AccountTypeSetupToken,
+		attempted.GetCredential("access_token"), attempted.GetCredential("refresh_token"), service.SchedulerOutboxEventAccountChanged)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		r.syncSchedulerAccountSnapshotDetached(ctx, id)
+	}
+	return true, nil
+}
+
+func (r *accountRepository) SetClaudeOAuthRefreshFailureIfUnchanged(ctx context.Context, expected *service.Account, message string, until *time.Time) (bool, error) {
+	if scoped := r.accountTransactionScope(ctx); scoped != r {
+		return scoped.SetClaudeOAuthRefreshFailureIfUnchanged(ctx, expected, message, until)
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts AS a
+			SET status = CASE WHEN $10::timestamptz IS NULL THEN $12 ELSE a.status END,
+				error_message = CASE WHEN $10::timestamptz IS NULL THEN $11 ELSE a.error_message END,
+				temp_unschedulable_until = CASE WHEN $10::timestamptz IS NULL THEN a.temp_unschedulable_until ELSE $10 END,
+				temp_unschedulable_reason = CASE WHEN $10::timestamptz IS NULL THEN a.temp_unschedulable_reason ELSE $11 END,
+				updated_at = NOW()
+			WHERE a.id = $1 AND a.deleted_at IS NULL AND a.platform = $2
+				AND a.type IN ($3, $4) AND a.status = $13
+				AND COALESCE(a.credentials ->> 'access_token', '') = $5
+				AND COALESCE(a.credentials ->> 'refresh_token', '') = $6
+				AND a.proxy_id IS NOT DISTINCT FROM $7
+				AND a.temp_unschedulable_until IS NOT DISTINCT FROM $8::timestamptz
+				AND COALESCE(a.temp_unschedulable_reason, '') = $9
+			RETURNING a.id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $14, updated.id, NULL, NULL FROM updated`,
+		expected.ID, service.PlatformAnthropic, service.AccountTypeOAuth, service.AccountTypeSetupToken,
+		expected.GetCredential("access_token"), expected.GetCredential("refresh_token"), expected.ProxyID,
+		expected.TempUnschedulableUntil, expected.TempUnschedulableReason, until, message,
+		service.StatusError, service.StatusActive, service.SchedulerOutboxEventAccountChanged)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		r.syncSchedulerAccountSnapshotDetached(ctx, expected.ID)
+	}
+	return true, nil
+}
+
+func (r *accountRepository) ClearClaudeOAuthStateIfUnchanged(ctx context.Context, expected *service.Account, clearError, clearTemporary bool) (bool, error) {
+	if scoped := r.accountTransactionScope(ctx); scoped != r {
+		return scoped.ClearClaudeOAuthStateIfUnchanged(ctx, expected, clearError, clearTemporary)
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts AS a
+			SET status = CASE WHEN $7 THEN $13 ELSE a.status END,
+				error_message = CASE WHEN $7 THEN '' ELSE a.error_message END,
+				temp_unschedulable_until = CASE WHEN $8 THEN NULL ELSE a.temp_unschedulable_until END,
+				temp_unschedulable_reason = CASE WHEN $8 THEN NULL ELSE a.temp_unschedulable_reason END,
+				updated_at = NOW()
+			WHERE a.id = $1 AND a.deleted_at IS NULL AND a.platform = $2
+				AND a.type IN ($3, $4)
+				AND COALESCE(a.credentials ->> 'access_token', '') = $5
+				AND COALESCE(a.credentials ->> 'refresh_token', '') = $6
+				AND (NOT $7 OR (a.status = $9 AND COALESCE(a.error_message, '') = $10))
+				AND (NOT $8 OR (a.temp_unschedulable_until IS NOT DISTINCT FROM $11::timestamptz
+					AND COALESCE(a.temp_unschedulable_reason, '') = $12))
+			RETURNING a.id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $14, updated.id, NULL, NULL FROM updated`,
+		expected.ID, service.PlatformAnthropic, service.AccountTypeOAuth, service.AccountTypeSetupToken,
+		expected.GetCredential("access_token"), expected.GetCredential("refresh_token"),
+		clearError, clearTemporary, expected.Status, expected.ErrorMessage,
+		expected.TempUnschedulableUntil, expected.TempUnschedulableReason, service.StatusActive,
+		service.SchedulerOutboxEventAccountChanged)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	if dbent.TxFromContext(ctx) == nil {
+		r.syncSchedulerAccountSnapshotDetached(ctx, expected.ID)
+	}
+	return true, nil
+}
+
 // SetGrokOAuthRefreshErrorIfCredentialsUnchanged is the background-refresh
 // counterpart to reconciliation's stricter missing-refresh-token mutation. It
 // matches the complete credential document used by the failed upstream attempt

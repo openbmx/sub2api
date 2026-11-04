@@ -151,3 +151,44 @@ func TestClaudeMaskingFailureBlocksOutboundRequest(t *testing.T) {
 	_, _, err := svc.buildUpstreamRequest(context.Background(), c, account, raw, "synthetic", "oauth", "claude-sonnet-4-6", false, false)
 	require.ErrorContains(t, err, "masked session cache unavailable")
 }
+
+func TestClaudeExplicitSessionsOverrideTheFirstMessageAnchor(t *testing.T) {
+	for _, route := range []string{"messages", "chat", "responses"} {
+		t.Run(route, func(t *testing.T) {
+			upstream := &anthropicHTTPUpstreamRecorder{}
+			svc := claudeRepairOAuthService(t, upstream, true)
+			account := newAnthropicOAuthAccountForPartialUsageTest()
+			var ids []string
+			for i, session := range []string{"conversation-a", "conversation-b", "conversation-a"} {
+				text := "hello"
+				if i == 2 {
+					text = "history was compacted"
+				}
+				raw := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":` + strconvQuote(text) + `}],"max_tokens":1024}`)
+				if route == "responses" {
+					raw = []byte(`{"model":"claude-sonnet-4-6","input":` + strconvQuote(text) + `}`)
+				}
+				c, _ := claudeRepairContext(raw, "test-client/1.0")
+				c.Set("api_key", &APIKey{ID: 101})
+				c.Request.Header.Set("X-Claude-Code-Session-Id", session)
+				upstream.resp = &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(claudeRepairSSE([]string{"ok"})))}
+				var err error
+				switch route {
+				case "responses":
+					_, err = svc.ForwardAsResponses(context.Background(), c, account, raw, nil)
+				case "chat":
+					_, err = svc.ForwardAsChatCompletions(context.Background(), c, account, raw, nil)
+				default:
+					upstream.resp = claudeRepairResponse("ok")
+					_, err = svc.Forward(context.Background(), c, account, claudeRepairParse(t, raw))
+				}
+				require.NoError(t, err)
+				meta := ParseMetadataUserID(gjson.GetBytes(upstream.lastBody, "metadata.user_id").String())
+				require.NotNil(t, meta)
+				ids = append(ids, meta.SessionID)
+			}
+			require.NotEqual(t, ids[0], ids[1])
+			require.Equal(t, ids[0], ids[2])
+		})
+	}
+}

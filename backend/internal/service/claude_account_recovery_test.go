@@ -105,14 +105,14 @@ func TestClaudeUsageSuccessDoesNotRepairRefreshCredentials(t *testing.T) {
 }
 
 func TestClaudeSuccessfulRefreshRepairsOnlyItsAuthenticationError(t *testing.T) {
-	for _, message := range []string{"Token refresh failed (non-retryable): invalid_grant", "Access forbidden (403): policy denial"} {
+	for _, message := range []string{"Token refresh failed (non-retryable): invalid_grant", "OAuth 401 (no refresh_token): expired", "Access forbidden (403): policy denial"} {
 		repo := &claudeRecoveryRepo{}
 		svc := &TokenRefreshService{accountRepo: repo}
 		account := &Account{ID: 945, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusError, ErrorMessage: message}
 		svc.postRefreshActions(context.Background(), account)
-		if message == "Token refresh failed (non-retryable): invalid_grant" {
-			require.Equal(t, 1, repo.clearErrorCalls)
+		if message != "Access forbidden (403): policy denial" {
 			require.Equal(t, StatusActive, account.Status)
+			require.Empty(t, account.ErrorMessage)
 		} else {
 			require.Zero(t, repo.clearErrorCalls)
 			require.Equal(t, StatusError, account.Status)
@@ -202,6 +202,22 @@ func TestClaudeFailedRotationSaveDoesNotUseOldAccessToken(t *testing.T) {
 	_, err := provider.GetAccessToken(context.Background(), account)
 	require.ErrorIs(t, err, errOAuthRefreshCredentialPersist)
 	require.Equal(t, 1, executor.calls)
+}
+
+func TestClaudePendingRefreshDoesNotReplaceReauthorizedAccess(t *testing.T) {
+	calls := 0
+	svc := NewOAuthService(nil, &mockClaudeOAuthClient{refreshTokenFunc: func(context.Context, string, string) (*oauth.TokenResponse, error) {
+		calls++
+		return &oauth.TokenResponse{AccessToken: "rotated", RefreshToken: "new-refresh", ExpiresIn: 3600}, nil
+	}})
+	t.Cleanup(svc.Stop)
+	account := &Account{ID: 956, Credentials: map[string]any{"access_token": "old", "refresh_token": "same-refresh"}}
+	_, err := svc.RefreshAccountToken(context.Background(), account)
+	require.NoError(t, err)
+	account.Credentials["access_token"] = "reauthorized"
+	_, err = svc.RefreshAccountToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, 2, calls)
 }
 
 func TestClaudeSetupToken401UsesRefreshRecovery(t *testing.T) {

@@ -1534,12 +1534,26 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		account.Status == service.StatusError && service.IsClaudeRefreshAuthenticationError(account.ErrorMessage) {
 		status = service.StatusActive
 	}
+	var expectedCredentials map[string]any
+	if account.IsAnthropicOAuthOrSetupToken() {
+		expectedCredentials = account.Credentials
+	}
 	updatedAccount, err := h.adminService.UpdateAccount(ctx, account.ID, &service.UpdateAccountInput{
-		Credentials: newCredentials,
-		Status:      status,
+		Credentials:          newCredentials,
+		Status:               status,
+		OAuthRefreshExpected: expectedCredentials,
 	})
 	if err != nil {
 		return nil, "", err
+	}
+	rotationApplied := updatedAccount.GetCredential("access_token") == fmt.Sprint(newCredentials["access_token"]) &&
+		updatedAccount.GetCredential("refresh_token") == fmt.Sprint(newCredentials["refresh_token"])
+	if account.IsAnthropicOAuthOrSetupToken() && rotationApplied && h.rateLimitService != nil {
+		if recovered, recoveryErr := h.rateLimitService.RecoverClaudeOAuthAccount(ctx, account.ID); recoveryErr == nil {
+			updatedAccount = recovered
+		} else {
+			log.Printf("[WARN] Claude credentials saved but state recovery failed for account %d: %v", account.ID, recoveryErr)
+		}
 	}
 
 	service.AfterAccountCommit(ctx, func(ctx context.Context) {
@@ -1695,7 +1709,15 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		}
 	}
 
-	if cleared, clearErr := h.adminService.ClearAccountError(ctx, accountID); clearErr != nil {
+	if existing.Platform == service.PlatformAnthropic {
+		if h.rateLimitService != nil {
+			if recovered, err := h.rateLimitService.RecoverClaudeOAuthAccount(ctx, accountID); err == nil {
+				updatedAccount = recovered
+			} else {
+				slog.Warn("apply_oauth_credentials.authentication_recovery_failed", "account_id", accountID, "err", err)
+			}
+		}
+	} else if cleared, clearErr := h.adminService.ClearAccountError(ctx, accountID); clearErr != nil {
 		slog.Warn("apply_oauth_credentials.clear_error_failed",
 			"account_id", accountID,
 			"err", clearErr,

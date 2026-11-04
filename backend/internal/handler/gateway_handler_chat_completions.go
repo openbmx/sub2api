@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -413,39 +415,41 @@ func (h *GatewayHandler) chatCompletionsErrorResponse(c *gin.Context, status int
 
 // handleCCFailoverExhausted writes a failover-exhausted error in CC format.
 func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *service.UpstreamFailoverError, streamStarted bool) {
+	status, message := http.StatusBadGateway, "All available accounts exhausted"
+	errorType := "server_error"
+	if lastErr != nil && lastErr.StatusCode > 0 {
+		status = lastErr.StatusCode
+	}
+	if lastErr != nil && lastErr.Reason == service.GatewayFailureReasonUpstreamRetryDisallowed && lastErr.ClientStatusCode > 0 {
+		status, message = lastErr.ClientStatusCode, lastErr.ClientMessage
+	} else if lastErr != nil && lastErr.IsCredentialFailure() {
+		status, message = credentialFailoverClientResponse(lastErr)
+	} else if lastErr != nil && lastErr.IsOpenAICapacityShed() && strings.TrimSpace(lastErr.ClientMessage) != "" {
+		status, message = lastErr.ClientStatusCode, lastErr.ClientMessage
+		if status <= 0 {
+			status = http.StatusServiceUnavailable
+		}
+	} else if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
+		service.SetOpsUpstreamError(c, status, service.OpenAISilentRefusalClientMessage(), "")
+		status, message = http.StatusBadGateway, service.OpenAISilentRefusalClientMessage()
+		errorType = "upstream_error"
+	}
 	if streamStarted {
+		if c.Writer.Size() > 0 && !gatewayStreamHasOnlyHeartbeats(c) {
+			return
+		}
+		service.MarkOpsStreamError(c, errorType, message, status)
+		payload, _ := json.Marshal(gin.H{"error": gin.H{"type": errorType, "message": message}})
+		if _, err := fmt.Fprintf(c.Writer, "data: %s\n\ndata: [DONE]\n\n", payload); err == nil {
+			c.Writer.Flush()
+		}
 		return
 	}
 	if lastErr != nil {
 		copyFailoverRetryAfter(c, lastErr.ResponseHeaders)
-	}
-	if lastErr != nil && lastErr.Reason == service.GatewayFailureReasonUpstreamRetryDisallowed && lastErr.ClientStatusCode > 0 {
-		service.WriteStoppedUpstreamResponseHeaders(c.Writer.Header(), lastErr.ResponseHeaders)
-
-		h.chatCompletionsErrorResponse(c, lastErr.ClientStatusCode, "server_error", lastErr.ClientMessage)
-		return
-	}
-	if lastErr != nil && lastErr.IsCredentialFailure() {
-		status, message := credentialFailoverClientResponse(lastErr)
-		h.chatCompletionsErrorResponse(c, status, "server_error", message)
-		return
-	}
-	if lastErr != nil && lastErr.IsOpenAICapacityShed() && strings.TrimSpace(lastErr.ClientMessage) != "" {
-		status := lastErr.ClientStatusCode
-		if status <= 0 {
-			status = http.StatusServiceUnavailable
+		if lastErr.Reason == service.GatewayFailureReasonUpstreamRetryDisallowed {
+			service.WriteStoppedUpstreamResponseHeaders(c.Writer.Header(), lastErr.ResponseHeaders)
 		}
-		h.chatCompletionsErrorResponse(c, status, "server_error", lastErr.ClientMessage)
-		return
 	}
-	statusCode := http.StatusBadGateway
-	if lastErr != nil && lastErr.StatusCode > 0 {
-		statusCode = lastErr.StatusCode
-	}
-	if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
-		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
-		h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage())
-		return
-	}
-	h.chatCompletionsErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")
+	h.chatCompletionsErrorResponse(c, status, errorType, message)
 }

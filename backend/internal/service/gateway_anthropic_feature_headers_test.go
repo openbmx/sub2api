@@ -51,3 +51,17 @@ func TestAnthropicFeatureHeadersRespectOfficialOrigins(t *testing.T) {
 		require.Equal(t, tc.allowed, allowAnthropicRequestHeader("anthropic-workspace-id", u), tc.address)
 	}
 }
+
+func TestClaudeOAuthMimicPreservesOfficialFeatureHeaders(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	c, _ := claudeRepairContext(body, "httpx/0.28.1")
+	c.Request.Header.Set("anthropic-workspace-id", "workspace")
+	c.Request.Header.Set("x-claude-code-agent-id", "agent")
+	c.Request.Header.Set("X-Stainless-Lang", "python")
+	svc := newForwardPartialUsageServiceForTest(&anthropicHTTPUpstreamRecorder{})
+	req, _, err := svc.buildUpstreamRequest(context.Background(), c, newAnthropicOAuthAccountForPartialUsageTest(), body, "synthetic", "oauth", "claude-sonnet-4-6", false, true)
+	require.NoError(t, err)
+	require.Equal(t, "workspace", getHeaderRaw(req.Header, "anthropic-workspace-id"))
+	require.Equal(t, "agent", getHeaderRaw(req.Header, "x-claude-code-agent-id"))
+	require.Equal(t, "js", getHeaderRaw(req.Header, "X-Stainless-Lang"))
+}

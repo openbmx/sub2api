@@ -100,6 +100,26 @@ func (r *tokenRefreshAccountRepo) GetByID(ctx context.Context, id int64) (*Accou
 	return snapshotOAuthRefreshAccount(account), nil
 }
 
+func (r *tokenRefreshAccountRepo) UpdateClaudeOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected, updates map[string]any) (bool, error) {
+	if r.beforeConditionalState != nil {
+		r.beforeConditionalState()
+	}
+	current := r.accountsByID[id]
+	if current == nil {
+		current = &Account{ID: id, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Credentials: shallowCopyMap(expected)}
+	}
+	old := &Account{Credentials: expected}
+	if current.GetCredential("access_token") != old.GetCredential("access_token") || current.GetCredential("refresh_token") != old.GetCredential("refresh_token") {
+		return false, nil
+	}
+	if r.accountsByID == nil {
+		r.accountsByID = map[int64]*Account{}
+	}
+	r.accountsByID[id] = current
+	err := r.UpdateCredentials(ctx, id, MergeCredentials(current.Credentials, updates))
+	return err == nil, err
+}
+
 func (r *tokenRefreshAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
 	r.setErrorCalls++
 	r.lastErrorMessage = errorMsg
@@ -879,9 +899,11 @@ func TestTokenRefreshService_RefreshWithRetry_NonRetryableErrorAllPlatforms(t *t
 			}
 			service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
 			account := &Account{
-				ID:       16,
-				Platform: tt.platform,
-				Type:     AccountTypeOAuth,
+				ID:          16,
+				Platform:    tt.platform,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
 			}
 			refresher := &tokenRefresherStub{
 				err: errors.New("invalid_grant: token revoked"),

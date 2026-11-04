@@ -182,12 +182,15 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// 白名单透传 headers
 	// OAuth mimicry 路径：跳过客户端 header 透传，与 Parrot 对齐。
-	// Parrot 的 build_upstream_headers 只发 9 个精确 header，不透传任何客户端 header。
-	// 透传客户端 header 会引入不一致的 x-stainless-* / anthropic-beta / user-agent /
-	// x-claude-code-session-id 等值，和我们注入的伪装 header 冲突，被 Anthropic 判 third-party。
-	if tokenType != "oauth" || !mimicClaudeCode {
+	// 模拟请求使用统一的账号画像；官方目标的功能头继续按允许列表透传。
+	// 客户端 UA、SDK 和 session 值在这里排除，以保持账号画像一致。
+	if tokenType != "oauth" || !mimicClaudeCode || isOfficialAnthropicTarget(req.URL) {
 		for key, values := range clientHeaders {
 			lowerKey := strings.ToLower(key)
+			if tokenType == "oauth" && mimicClaudeCode &&
+				(!strings.HasPrefix(lowerKey, "anthropic-") && !strings.HasPrefix(lowerKey, "x-claude-code-") || lowerKey == "x-claude-code-session-id") {
+				continue
+			}
 			if allowAnthropicRequestHeader(lowerKey, req.URL) {
 				wireKey := resolveWireCasing(key)
 				for _, v := range values {

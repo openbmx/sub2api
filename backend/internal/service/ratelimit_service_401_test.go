@@ -38,6 +38,13 @@ func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, error
 	return nil
 }
 
+func (r *rateLimitAccountRepoStub) SetClaudeOAuthRefreshFailureIfUnchanged(ctx context.Context, expected *Account, message string, until *time.Time) (bool, error) {
+	if until == nil {
+		return true, r.SetError(ctx, expected.ID, message)
+	}
+	return true, r.SetTempUnschedulable(ctx, expected.ID, *until, message)
+}
+
 func (r *rateLimitAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.tempCalls++
 	r.lastTempID = id

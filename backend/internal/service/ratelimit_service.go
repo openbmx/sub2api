@@ -972,6 +972,22 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 
 // handleAuthError 处理认证类错误(401/403)，停止账号调度
 func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account, errorMsg string) {
+	if account.IsAnthropicOAuthOrSetupToken() && IsClaudeRefreshAuthenticationError(errorMsg) {
+		repo, ok := s.accountRepo.(ClaudeOAuthRefreshFailureRepository)
+		if !ok {
+			slog.Warn("claude_auth_error_persistence_unavailable", "account_id", account.ID)
+			return
+		}
+		applied, err := repo.SetClaudeOAuthRefreshFailureIfUnchanged(ctx, snapshotOAuthRefreshAccount(account), errorMsg, nil)
+		if err != nil {
+			slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
+			return
+		}
+		if applied {
+			s.notifyAccountSchedulingBlocked(account, time.Time{}, "auth_error")
+		}
+		return
+	}
 	s.notifyAccountSchedulingBlocked(account, time.Time{}, "auth_error")
 	if err := s.accountRepo.SetError(ctx, account.ID, errorMsg); err != nil {
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
@@ -2248,6 +2264,32 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 
 	return result, nil
+}
+
+// RecoverClaudeOAuthAccount restores only authentication-related state after persisted credentials change.
+func (s *RateLimitService) RecoverClaudeOAuthAccount(ctx context.Context, id int64) (*Account, error) {
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !account.IsAnthropicOAuthOrSetupToken() {
+		return account, nil
+	}
+	account, _, clearTemporary, err := recoverClaudeOAuthState(ctx, s.accountRepo, account)
+	if err != nil {
+		return nil, err
+	}
+	AfterAccountCommit(ctx, func(cleanup context.Context) {
+		if clearTemporary && s.tempUnschedCache != nil {
+			if err := s.tempUnschedCache.DeleteTempUnsched(cleanup, id); err != nil {
+				slog.Warn("claude_auth_recovery_cache_failed", "account_id", id, "error", err)
+			}
+		}
+		if account.Status == StatusActive && !hasRecoverableRuntimeState(account) {
+			s.notifyAccountSchedulingBlockCleared(id)
+		}
+	})
+	return account, nil
 }
 
 // RecoverAccountAfterSuccessfulTest 将一次成功测试视为正常请求，

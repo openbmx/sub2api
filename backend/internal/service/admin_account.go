@@ -581,6 +581,18 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
+	if input.OAuthRefreshExpected != nil {
+		if !account.IsAnthropicOAuthOrSetupToken() {
+			return account, nil
+		}
+		attempted := snapshotOAuthRefreshAccount(account)
+		attempted.Credentials = input.OAuthRefreshExpected
+		current, _, err := persistClaudeOAuthRefresh(ctx, s.accountRepo, attempted, input.Credentials)
+		if err != nil {
+			return nil, err
+		}
+		return current, nil
+	}
 	if account.Platform == PlatformTypeSafe && input.Type != "" && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}

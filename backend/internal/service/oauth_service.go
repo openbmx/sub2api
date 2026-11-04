@@ -53,8 +53,9 @@ type OAuthService struct {
 }
 
 type claudeAccountRefreshResult struct {
-	sourceToken string
-	info        TokenInfo
+	sourceToken       string
+	sourceAccessToken string
+	info              TokenInfo
 }
 
 type claudeOAuthProxyResolutionError struct{ err error }
@@ -347,7 +348,7 @@ func (s *OAuthService) RefreshAccountToken(ctx context.Context, account *Account
 			info := previous.info
 			persisted := account.GetCredential("access_token") == info.AccessToken &&
 				(info.RefreshToken == "" || info.RefreshToken == refreshToken)
-			if !persisted {
+			if !persisted && previous.sourceAccessToken == account.GetCredential("access_token") {
 				return &info, nil
 			}
 			s.refreshResults.Delete(account.ID)
@@ -363,7 +364,7 @@ func (s *OAuthService) RefreshAccountToken(ctx context.Context, account *Account
 	if err != nil {
 		return nil, err
 	}
-	s.refreshResults.Store(account.ID, claudeAccountRefreshResult{sourceToken: refreshToken, info: *info})
+	s.refreshResults.Store(account.ID, claudeAccountRefreshResult{sourceToken: refreshToken, sourceAccessToken: account.GetCredential("access_token"), info: *info})
 	return info, nil
 }
 

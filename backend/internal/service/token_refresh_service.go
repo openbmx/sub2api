@@ -899,7 +899,11 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				releaseRate, err = acquireRate(attemptCtx)
 			}
 			if err == nil {
+				attemptedAccount := snapshotOAuthRefreshAccount(account)
 				newCredentials, err = refresher.Refresh(attemptCtx, account)
+				if account.Platform == PlatformAnthropic {
+					account = attemptedAccount
+				}
 			}
 			if releaseRate != nil {
 				releaseRate()
@@ -912,11 +916,24 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				if account.Platform == PlatformAnthropic && attemptCtx.Err() != nil {
 					persistCtx, cancelPersist = context.WithTimeout(context.WithoutCancel(attemptCtx), defaultRefreshPostPersistCleanupTimeout)
 				}
-				saveErr := persistAccountCredentials(persistCtx, s.accountRepo, account, newCredentials)
+				var saveErr error
+				if account.Platform == PlatformAnthropic {
+					var current *Account
+					var applied bool
+					current, applied, saveErr = persistClaudeOAuthRefresh(persistCtx, s.accountRepo, account, newCredentials)
+					if saveErr == nil && !applied {
+						saveErr = errRefreshSkipped
+					}
+					if saveErr == nil {
+						account = current
+					}
+				} else {
+					saveErr = persistAccountCredentials(persistCtx, s.accountRepo, account, newCredentials)
+				}
 				cancelPersist()
 				if saveErr != nil {
 					err = fmt.Errorf("failed to save credentials: %w", saveErr)
-					if account.Platform == PlatformAnthropic {
+					if account.Platform == PlatformAnthropic && !errors.Is(saveErr, errRefreshSkipped) {
 						err = fmt.Errorf("%w: %w", errOAuthRefreshCredentialPersist, err)
 					}
 				} else {
@@ -1001,7 +1018,8 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		if isNonRetryableRefreshError(err) {
 			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
 			isGrokOAuth := account.IsGrokOAuth()
-			if !isGrokOAuth {
+			isClaudeOAuth := account.IsAnthropicOAuthOrSetupToken()
+			if !isGrokOAuth && !isClaudeOAuth {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
@@ -1026,6 +1044,15 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 						return errRefreshSkipped
 					}
 				}
+			} else if isClaudeOAuth {
+				conditionalRepo, ok := s.accountRepo.(ClaudeOAuthRefreshFailureRepository)
+				if !ok {
+					return errors.New("claude OAuth conditional state persistence is not configured")
+				}
+				persistentlyBlocked, setErr = conditionalRepo.SetClaudeOAuthRefreshFailureIfUnchanged(ctx, account, errorMsg, nil)
+				if setErr == nil && !persistentlyBlocked {
+					return errRefreshSkipped
+				}
 			} else {
 				setErr = s.accountRepo.SetError(ctx, account.ID, errorMsg)
 				persistentlyBlocked = setErr == nil
@@ -1035,16 +1062,16 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 					"account_id", account.ID,
 					"error", setErr,
 				)
-				if isGrokOAuth {
+				if isGrokOAuth || isClaudeOAuth {
 					return &providerCycleContainmentRefreshError{
-						err: fmt.Errorf("failed to conditionally persist Grok OAuth refresh failure: %w", setErr),
+						err: fmt.Errorf("failed to conditionally persist %s OAuth refresh failure: %w", account.Platform, setErr),
 					}
 				}
-			} else if isGrokOAuth && persistentlyBlocked {
+			} else if (isGrokOAuth || isClaudeOAuth) && persistentlyBlocked {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
 			cacheInvalidationFailed := false
-			if account.Type == AccountTypeOAuth && (!isGrokOAuth || persistentlyBlocked) {
+			if (account.Type == AccountTypeOAuth || isClaudeOAuth) && (!isGrokOAuth && !isClaudeOAuth || persistentlyBlocked) {
 				if s.cacheInvalidator == nil {
 					cacheInvalidationFailed = true
 				} else if invalidateErr := s.cacheInvalidator.InvalidateToken(ctx, account); invalidateErr != nil {
@@ -1101,6 +1128,25 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	reason := "token refresh retry exhausted"
 	if lastErr != nil {
 		reason += ": " + logredact.RedactText(lastErr.Error())
+	}
+	if account.IsAnthropicOAuthOrSetupToken() {
+		if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) &&
+			!claudeRefreshCanClearTemporaryStop(account.TempUnschedulableReason) {
+			return lastErr
+		}
+		conditionalRepo, ok := s.accountRepo.(ClaudeOAuthRefreshFailureRepository)
+		if !ok {
+			return errors.New("claude OAuth conditional state persistence is not configured")
+		}
+		applied, err := conditionalRepo.SetClaudeOAuthRefreshFailureIfUnchanged(ctx, account, reason, &until)
+		if err != nil {
+			return &providerCycleContainmentRefreshError{err: fmt.Errorf("persist Claude OAuth refresh cooldown: %w", err)}
+		}
+		if !applied {
+			return errRefreshSkipped
+		}
+		s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
+		return lastErr
 	}
 	if account.IsGrokOAuth() {
 		conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
@@ -1174,13 +1220,20 @@ func (s *TokenRefreshService) retryBackoff(accountID int64, attempt int) time.Du
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
 	s.clearAntigravityForceTokenRefresh(ctx, account, "success")
-	if account.Platform == PlatformAnthropic && account.Status == StatusError && IsClaudeRefreshAuthenticationError(account.ErrorMessage) {
-		if err := s.accountRepo.ClearError(ctx, account.ID); err != nil {
-			slog.Warn("token_refresh.clear_account_error_failed", "account_id", account.ID, "error", err)
+	if account.IsAnthropicOAuthOrSetupToken() {
+		current, clearedError, clearedTemporary, err := recoverClaudeOAuthState(ctx, s.accountRepo, account)
+		if err != nil {
+			slog.Warn("token_refresh.authentication_recovery_failed", "account_id", account.ID, "error", err)
 		} else {
-			account.Status = StatusActive
-			account.ErrorMessage = ""
-			s.notifyAccountSchedulingBlockCleared(account.ID)
+			*account = *current
+			if clearedTemporary && s.tempUnschedCache != nil {
+				if err := s.tempUnschedCache.DeleteTempUnsched(ctx, account.ID); err != nil {
+					slog.Warn("token_refresh.clear_temp_unsched_cache_failed", "account_id", account.ID, "error", err)
+				}
+			}
+			if (clearedError || clearedTemporary) && account.Status == StatusActive && !hasRecoverableRuntimeState(account) {
+				s.notifyAccountSchedulingBlockCleared(account.ID)
+			}
 		}
 	}
 
@@ -1200,7 +1253,7 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	}
 	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）
 	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) &&
-		(account.Platform != PlatformAnthropic || claudeRefreshCanClearTemporaryStop(account.TempUnschedulableReason)) {
+		account.Platform != PlatformAnthropic {
 		clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID)
 		if clearErr != nil {
 			slog.Warn("token_refresh.clear_temp_unschedulable_failed",
@@ -1245,6 +1298,7 @@ func IsClaudeRefreshAuthenticationError(message string) bool {
 	message = strings.ToLower(strings.TrimSpace(message))
 	return strings.HasPrefix(message, "token refresh failed") ||
 		strings.HasPrefix(message, "oauth 401:") ||
+		strings.HasPrefix(message, "oauth 401 (no refresh_token):") ||
 		strings.HasPrefix(message, "authentication failed (401):")
 }
 

@@ -49,7 +49,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
-		passthroughBody := parsed.Body.Bytes()
+		passthroughBody := StripEmptyTextBlocks(parsed.Body.Bytes())
 		passthroughModel := parsed.Model
 		if reqModel := parsed.Model; reqModel != "" {
 			if mappedModel := account.GetMappedModel(reqModel); mappedModel != reqModel {
@@ -58,6 +58,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 				logger.LegacyPrintf("service.gateway", "CountTokens passthrough model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
 			}
 		}
+		passthroughBody = FilterWebSearchHistoryBlocks(passthroughBody, passthroughModel)
 		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody, passthroughModel)
 	}
 
@@ -97,7 +98,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	if shouldMimicClaudeCode {
 		systemRaw, _ := parsed.SystemValue()
-		normalizedBody, normalizedModel := s.rewriteClaudeOAuthInputBody(ctx, nil, body, systemRaw, reqModel, claudeOAuthNormalizeOptions{})
+		normalizedBody, normalizedModel := s.rewriteClaudeOAuthInputBody(ctx, nil, account, body, systemRaw, reqModel, claudeOAuthNormalizeOptions{})
 		if err := replaceBody(normalizedBody); err != nil {
 			return err
 		}
@@ -124,6 +125,12 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			parsed.Model = mappedModel
 			logger.LegacyPrintf("service.gateway", "CountTokens model mapping applied: %s -> %s (account: %s, source=%s)", originalReqModel, mappedModel, account.Name, mappingSource)
 		}
+	}
+	if err := replaceBody(FilterWebSearchHistoryBlocks(body, reqModel)); err != nil {
+		return err
+	}
+	if err := replaceBody(FilterThinkingBlocks(body, reqModel)); err != nil {
+		return err
 	}
 
 	// 获取凭证

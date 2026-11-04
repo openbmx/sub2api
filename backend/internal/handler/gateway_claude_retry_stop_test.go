@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,4 +38,30 @@ func TestClaudeStoppedResponsePreservesStatusAndReason(t *testing.T) {
 			require.Contains(t, rec.Body.String(), "Request explicitly rejected")
 		})
 	}
+}
+
+func TestClaudeChatStopAfterWaitHeartbeatReturnsATerminalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Header("Content-Type", "text/event-stream")
+	n, err := fmt.Fprint(c.Writer, ": keepalive\n\n")
+	require.NoError(t, err)
+	recordGatewayStreamHeartbeat(c, n)
+	c.Writer.Flush()
+	failure := &service.UpstreamFailoverError{StatusCode: 403, ClientStatusCode: 403, ClientMessage: "Request explicitly rejected", Reason: service.GatewayFailureReasonUpstreamRetryDisallowed, NextAccountAction: service.NextAccountStop}
+	(&GatewayHandler{}).handleCCFailoverExhausted(c, failure, true)
+	require.Contains(t, rec.Body.String(), `"message":"Request explicitly rejected"`)
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
+func TestChatSilentRefusalPreservesErrorTypeAndUpstreamStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	failure := &service.UpstreamFailoverError{StatusCode: 503, ResponseBody: []byte(`{"error":{"code":"openai_silent_refusal"}}`)}
+	(&GatewayHandler{}).handleCCFailoverExhausted(c, failure, false)
+	require.Equal(t, 502, rec.Code)
+	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
+	require.Equal(t, 503, c.GetInt(service.OpsUpstreamStatusCodeKey))
 }

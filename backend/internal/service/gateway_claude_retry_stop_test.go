@@ -116,3 +116,18 @@ func TestClaudeRectifierResponsesAlsoHonorStop(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeEarlySSEStopDoesNotSwitchAccounts(t *testing.T) {
+	svc := newForwardPartialUsageServiceForTest(&anthropicHTTPUpstreamRecorder{})
+	svc.rateLimitService = &RateLimitService{accountRepo: &rateLimitAccountRepoStub{}, cfg: &config.Config{}}
+	c, _ := claudeRepairContext([]byte(`{}`), "test-client/1.0")
+	failure := svc.sseStreamErrorEventFailover(context.Background(), c, newAnthropicOAuthAccountForPartialUsageTest(), &http.Response{StatusCode: 200, Header: http.Header{"X-Should-Retry": {"false"}}}, `{"error":{"type":"overloaded_error","message":"Unavailable"}}`, "claude-sonnet-4-6", false)
+	require.False(t, failure.ShouldRetryNextAccount())
+	require.Equal(t, 529, failure.ClientStatusCode)
+	events, _ := c.Get(OpsUpstreamErrorsKey)
+	recorded, ok := events.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.NotEmpty(t, recorded)
+	require.Equal(t, "stream_error", recorded[0].Kind)
+	require.Equal(t, 529, recorded[0].UpstreamStatusCode)
+}
