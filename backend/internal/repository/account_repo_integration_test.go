@@ -1365,26 +1365,33 @@ func (s *AccountRepoSuite) TestClaudeRefreshFailureAndRecoveryPreserveNewerState
 	}
 }
 
-func (s *AccountRepoSuite) TestClaudeRefreshStateRollsBackWhenOutboxFails() {
-	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "claude-refresh-outbox", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "old", "refresh_token": "refresh"}})
-	observed, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	repo := newAccountRepositoryWithSQL(s.client, &failAtomicSchedulerOutboxSQLExecutor{sqlExecutor: s.repo.sql}, nil)
-	applied, err := repo.SetClaudeOAuthRefreshFailureIfUnchanged(s.ctx, observed, "invalid_grant", nil)
-	s.Require().Error(err)
-	s.Require().False(applied)
-	current, err := s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusActive, current.Status)
-	s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "OAuth 401: expired"))
-	current, err = s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	applied, err = repo.ClearClaudeOAuthStateIfUnchanged(s.ctx, current, true, false)
-	s.Require().Error(err)
-	s.Require().False(applied)
-	current, err = s.repo.GetByID(s.ctx, account.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(service.StatusError, current.Status)
+func TestClaudeRefreshStateRollsBackWhenOutboxFails(t *testing.T) {
+	client := testEntClient(t)
+	ctx := context.Background()
+	account := mustCreateAccount(t, client, &service.Account{Name: "claude-refresh-outbox", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"access_token": "old", "refresh_token": "refresh"}})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+		_ = client.Account.DeleteOneID(account.ID).Exec(ctx)
+	})
+	base := newAccountRepositoryWithSQL(client, integrationDB, nil)
+	observed, err := base.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	repo := newAccountRepositoryWithSQL(client, &failAtomicSchedulerOutboxSQLExecutor{sqlExecutor: integrationDB}, nil)
+	applied, err := repo.SetClaudeOAuthRefreshFailureIfUnchanged(ctx, observed, "invalid_grant", nil)
+	require.Error(t, err)
+	require.False(t, applied)
+	current, err := base.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.StatusActive, current.Status)
+	require.NoError(t, base.SetError(ctx, account.ID, "OAuth 401: expired"))
+	current, err = base.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	applied, err = repo.ClearClaudeOAuthStateIfUnchanged(ctx, current, true, false)
+	require.Error(t, err)
+	require.False(t, applied)
+	current, err = base.GetByID(ctx, account.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.StatusError, current.Status)
 }
 
 func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_SkipsConcurrentReauthorization() {
