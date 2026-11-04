@@ -600,16 +600,8 @@ gateway:
     outbox_backlog_rebuild_rows: 10000
     # 全量重建周期（秒），0 表示禁用
     full_rebuild_interval_seconds: 300
-  # TLS fingerprint simulation / TLS 指纹伪装
-  # Default profile "claude_cli_v2" simulates Node.js 20.x
-  # 默认模板 "claude_cli_v2" 模拟 Node.js 20.x 指纹
-  tls_fingerprint:
-    enabled: true
-    # profiles:
-    #   profile_1:
-    #     name: "Custom Profile 1"
-    #   profile_2:
-    #     name: "Custom Profile 2"
+  # TLS 指纹由 Anthropic OAuth/setup-token 账号设置和数据库模板控制。
+  # 在账号编辑页开启并选择固定模板；随机选项为 -1。
 
 # =============================================================================
 # Logging Configuration

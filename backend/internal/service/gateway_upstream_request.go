@@ -106,9 +106,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// 当 metadata 透传开启时跳过重写
 			if !enableMPT {
 				accountUUID := account.GetExtraString("account_uuid")
-				if accountUUID != "" && fp.ClientID != "" {
+				if fp.ClientID != "" {
 					wireUA := effectiveBillingUserAgent(mimicUserAgent, tokenType, mimicClaudeCode, fingerprint, clientHeaders)
-					if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, wireUA); err == nil && len(newBody) > 0 {
+					newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, wireUA)
+					if err != nil {
+						return nil, nil, err
+					}
+					if len(newBody) > 0 {
 						body = newBody
 					}
 				}
@@ -150,6 +154,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	finalBetaHeader = filterSonnet55ToolsetBeta(finalBetaHeader, body, modelID)
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
+	if err := validateAnthropicSafetyBetaForTarget(body, finalBetaHeader, targetURL); err != nil {
+		return nil, nil, err
+	}
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
 		body = sanitized
 	}
@@ -181,18 +188,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if tokenType != "oauth" || !mimicClaudeCode {
 		for key, values := range clientHeaders {
 			lowerKey := strings.ToLower(key)
-			if allowedHeaders[lowerKey] {
+			if allowAnthropicRequestHeader(lowerKey, req.URL) {
 				wireKey := resolveWireCasing(key)
 				for _, v := range values {
 					addHeaderRaw(req.Header, wireKey, v)
 				}
 			}
 		}
-	}
-
-	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
-	if fingerprint != nil {
-		s.identityService.ApplyFingerprint(req, fingerprint)
 	}
 
 	// 确保必要的headers存在（保持原始大小写）
@@ -210,7 +212,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// OAuth + mimic Claude Code：强制注入 CLI 指纹相关 header
 	// （user-agent/x-stainless-*/x-app/Accept/x-stainless-helper-method/x-client-request-id）
 	if tokenType == "oauth" && mimicClaudeCode {
-		applyClaudeCodeMimicHeaders(req, reqStream, mimicUserAgent)
+		applyClaudeCodeMimicHeaders(req, reqStream, wireUserAgent)
+	}
+	if fingerprint != nil {
+		s.identityService.ApplyFingerprint(req, fingerprint)
 	}
 
 	// 写入最终 anthropic-beta header
@@ -339,6 +344,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 		return nil, policy.blockErr
 	}
 	finalBeta := filterSonnet55ToolsetBeta(filterVertexBetaTokens(clientBeta, mergeDropSets(policy.filterSet)), vertexBody, modelID)
+	if err := validateAnthropicSafetyBeta(vertexBody, finalBeta); err != nil {
+		return nil, err
+	}
 
 	// 能力维度 sanitize：基于最终 beta（而非原始 client 值）决定是否保留 body 中的
 	// context_management，与 Anthropic 直连 / Bedrock 路径对称。
@@ -597,6 +605,7 @@ func (s *GatewayService) computeFinalAnthropicBeta(
 				claude.BetaStructuredOutputs,
 				claude.BetaMidConversationToolChanges,
 				claude.BetaInlineTools,
+				claude.BetaDangerousToolUse,
 			} {
 				if containsBetaToken(clientBeta, token) {
 					incomingBetas = append(incomingBetas, token)

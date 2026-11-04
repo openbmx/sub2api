@@ -1531,6 +1531,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					submitMessagesUsage(result)
 					return
 				}
+				var betaBlocked *service.BetaBlockedError
+				if errors.As(err, &betaBlocked) {
+					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", betaBlocked.Message, streamStarted)
+					return
+				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), false, nil, err)
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
 				reqLog.Warn("openai_messages.forward_failed",

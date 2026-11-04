@@ -23,6 +23,7 @@ const (
 	// Tool-change compatibility tokens; never enabled without an explicit client request.
 	BetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
 	BetaInlineTools                = "inline-tools-2026-09-15"
+	BetaDangerousToolUse           = "dangerous-tool-use-2026-09-03"
 
 	// 新增（对齐官方 CLI 2.1.9x 以来的流量）
 	BetaPromptCachingScope          = "prompt-caching-scope-2026-01-05"

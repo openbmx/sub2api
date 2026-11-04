@@ -4,9 +4,13 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -98,4 +102,50 @@ func TestIdentityCacheFailureDoesNotCreateTemporaryIdentity(t *testing.T) {
 	fp, err := service.NewIdentityService(cache).GetOrCreateFingerprint(context.Background(), 82, http.Header{"User-Agent": {claude.DefaultUserAgent()}})
 	require.Error(t, err)
 	require.Nil(t, fp)
+}
+
+func TestIdentityCacheMaskingConcurrentInitializationAndRenewal(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	cache := NewIdentityCache(rdb)
+	svc := service.NewIdentityService(cache)
+	account := &service.Account{ID: 941, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth, Extra: map[string]any{"session_id_masking_enabled": true}}
+	uid := service.FormatMetadataUserID(strings.Repeat("c", 64), "", "7578cf37-aaca-46e4-a45c-71285d9dbb83", "2.9.0")
+	body := []byte(`{"metadata":{"user_id":` + strconv.Quote(uid) + `}}`)
+	type result struct {
+		body []byte
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 30)
+	for range 30 {
+		go func() {
+			<-start
+			out, err := svc.RewriteUserIDWithMasking(context.Background(), body, account, "target", strings.Repeat("a", 64), "claude-cli/2.9.0 (external, cli)")
+			results <- result{out, err}
+		}()
+	}
+	close(start)
+	var first string
+	for range 30 {
+		got := <-results
+		require.NoError(t, got.err)
+		var value struct {
+			Metadata struct {
+				UserID string `json:"user_id"`
+			} `json:"metadata"`
+		}
+		require.NoError(t, json.Unmarshal(got.body, &value))
+		meta := service.ParseMetadataUserID(value.Metadata.UserID)
+		require.NotNil(t, meta)
+		if first == "" {
+			first = meta.SessionID
+		}
+		require.Equal(t, first, meta.SessionID)
+	}
+	mr.FastForward(10 * time.Minute)
+	_, err := svc.RewriteUserIDWithMasking(context.Background(), body, account, "target", strings.Repeat("a", 64), "claude-cli/2.9.0 (external, cli)")
+	require.NoError(t, err)
+	require.Equal(t, maskedSessionTTL, mr.TTL(maskedSessionKey(account.ID)))
 }

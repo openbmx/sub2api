@@ -42,6 +42,18 @@ func EffortLevelsForModel(model string) []string {
 	return nil
 }
 
+// SupportsAdaptiveThinking identifies the known adaptive families in the effort catalog.
+func SupportsAdaptiveThinking(model string) bool {
+	id := normalizeEffortModelID(model)
+	return len(EffortLevelsForModel(id)) > 0 && !strings.HasPrefix(id, "claude-opus-4-5")
+}
+
+func RequiresAdaptiveThinking(model string) bool {
+	id := normalizeEffortModelID(model)
+	return SupportsAdaptiveThinking(id) && !strings.HasPrefix(id, "claude-opus-4-6") &&
+		!strings.HasPrefix(id, "claude-sonnet-4-6")
+}
+
 // IsOpus55 identifies the fixed Opus 5.5 ID after provider/local suffix normalization.
 func IsOpus55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-opus-5-5"

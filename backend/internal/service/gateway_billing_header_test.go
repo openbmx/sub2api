@@ -114,7 +114,7 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 			identity  bool
 			disableFP bool
 		}{
-			{name: "mimic_overrides_cached_version", mimic: true, identity: true},
+			{name: "mimic_uses_cached_version", mimic: true, identity: true},
 			{name: "mimic_without_identity", mimic: true},
 			{name: "mimic_with_fingerprint_disabled", mimic: true, identity: true, disableFP: true},
 			{name: "passthrough_uses_cached_version", identity: true},
@@ -155,7 +155,7 @@ func TestBuildOAuthRequest_BillingMatchesWireUserAgent(t *testing.T) {
 				require.NoError(t, err)
 				defer func() { require.NoError(t, req.Body.Close()) }()
 				wantUA := cachedUA
-				if tc.mimic {
+				if tc.mimic && (!tc.identity || tc.disableFP) {
 					wantUA = claude.DefaultHeaders()["User-Agent"]
 				}
 				require.Equal(t, wantUA, getHeaderRaw(req.Header, "User-Agent"))

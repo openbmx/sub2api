@@ -66,6 +66,9 @@ func (s *GatewayService) forwardBedrock(
 	reqModel := parsed.Model
 	reqStream := parsed.Stream
 	body := parsed.Body.Bytes()
+	if err := validateAnthropicSafetyBeta(body, ""); err != nil {
+		return nil, err
+	}
 
 	region := bedrockRuntimeRegion(account)
 	mappedModel, ok := ResolveBedrockModelID(account, reqModel)

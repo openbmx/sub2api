@@ -15,16 +15,13 @@ var ccVersionInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+`)
 
 var ccVersionWithFingerprintInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+\.[0-9a-fA-F]{3}\b`)
 
-// effectiveBillingUserAgent 选择写进 x-anthropic-billing-header 的 User-Agent。
-// OAuth mimicry 强制使用调用方传入的 mimicUserAgent（与出站 User-Agent 头同源、
-// 同一次请求内取一次复用，保证 cc_version 与出站头版本严格一致），
-// 其余情况使用账号指纹 UA。
+// effectiveBillingUserAgent uses the account identity when enabled, then the selected fallback.
 func effectiveBillingUserAgent(mimicUserAgent, tokenType string, mimicClaudeCode bool, fingerprint *Fingerprint, clientHeaders http.Header) string {
-	if tokenType == "oauth" && mimicClaudeCode {
-		return mimicUserAgent
-	}
 	if fingerprint != nil && fingerprint.UserAgent != "" {
 		return fingerprint.UserAgent
+	}
+	if tokenType == "oauth" && mimicClaudeCode {
+		return mimicUserAgent
 	}
 	if tokenType == "oauth" {
 		if ua := getHeaderRaw(clientHeaders, "User-Agent"); ua != "" {

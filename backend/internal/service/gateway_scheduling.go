@@ -2665,6 +2665,9 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	}
 	// OAuth/SetupToken 账号使用 Anthropic 标准映射（短ID → 长ID）
 	if account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+		if len(account.GetModelMapping()) > 0 {
+			return account.IsModelSupported(requestedModel) || account.IsModelSupported(claude.NormalizeModelID(requestedModel))
+		}
 		if account.Type == AccountTypeServiceAccount {
 			requestedModel = normalizeVertexAnthropicModelID(claude.NormalizeModelID(requestedModel))
 		} else {

@@ -172,6 +172,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
 		clientBeta = beta
 	}
+
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
 	}
@@ -185,11 +186,16 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	if err != nil {
 		return nil, nil, err
 	}
+	if allowAnthropicRequestHeader("anthropic-workspace-id", req.URL) {
+		if err := validateAnthropicSafetyBeta(body, clientBeta); err != nil {
+			return nil, nil, err
+		}
+	}
 
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
+			if !allowAnthropicRequestHeader(lowerKey, req.URL) {
 				continue
 			}
 			wireKey := resolveWireCasing(key)

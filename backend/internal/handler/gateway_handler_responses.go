@@ -404,7 +404,11 @@ func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastEr
 		statusCode = lastErr.StatusCode
 	}
 	status, code, message := statusCode, "server_error", "All available accounts exhausted"
-	if lastErr != nil && lastErr.IsCredentialFailure() {
+	if lastErr != nil && lastErr.Reason == service.GatewayFailureReasonUpstreamRetryDisallowed && lastErr.ClientStatusCode > 0 {
+		status, message = lastErr.ClientStatusCode, lastErr.ClientMessage
+		service.WriteStoppedUpstreamResponseHeaders(c.Writer.Header(), lastErr.ResponseHeaders)
+
+	} else if lastErr != nil && lastErr.IsCredentialFailure() {
 		status, message = credentialFailoverClientResponse(lastErr)
 	} else if lastErr != nil && lastErr.IsOpenAICapacityShed() && strings.TrimSpace(lastErr.ClientMessage) != "" {
 		status = lastErr.ClientStatusCode

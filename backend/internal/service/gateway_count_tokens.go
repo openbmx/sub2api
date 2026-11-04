@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
@@ -36,8 +37,8 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			if resolved, ok := ResolveBedrockModelID(account, validationModel); ok {
 				validationModel = resolved
 			}
-		} else if account.Type == AccountTypeAPIKey {
-			validationModel = account.GetMappedModel(validationModel)
+		} else {
+			validationModel = resolveAnthropicUpstreamModel(account, validationModel)
 		}
 	}
 	if account != nil && account.Platform == PlatformAnthropic {
@@ -75,6 +76,13 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return nil
 	}
 	reqModel := parsed.Model
+	originalModel := reqModel
+	if validationModel != reqModel {
+		if err := replaceBody(s.replaceModelInBody(body, validationModel)); err != nil {
+			return err
+		}
+		reqModel = validationModel
+	}
 
 	// Pre-filter: strip empty text blocks to prevent upstream 400.
 	if err := replaceBody(StripEmptyTextBlocks(body)); err != nil {
@@ -82,55 +90,31 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	isClaudeCodeCT := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCodeCT && parsed.MetadataUserID != "" {
+		isClaudeCodeCT = systemHasBillingAttributionBlock(body)
+	}
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 
 	if shouldMimicClaudeCode {
-		var normalizedBody []byte
-		normalizedBody, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, claudeOAuthNormalizeOptions{})
+		systemRaw, _ := parsed.SystemValue()
+		normalizedBody, normalizedModel := s.rewriteClaudeOAuthInputBody(ctx, nil, body, systemRaw, reqModel, claudeOAuthNormalizeOptions{})
 		if err := replaceBody(normalizedBody); err != nil {
 			return err
 		}
-
-		if err := replaceBody(s.rewriteMessageCacheControlIfEnabled(ctx, body)); err != nil {
-			return err
-		}
-		if rw := buildToolNameRewriteFromBody(body); rw != nil {
-			if err := replaceBody(applyToolNameRewriteToBody(body, rw)); err != nil {
-				return err
-			}
-		} else {
-			if err := replaceBody(applyToolsLastCacheBreakpoint(body)); err != nil {
-				return err
-			}
-		}
-
-		// 4 块上限的兜底：其余四条出口都在自己的转发路径上调过一次，只有这里没有。
-		// 不再剥离客户端 system 断点之后，「客户端 system + 客户端 messages +
-		// 上面刚注入的 tools[-1]」可以直接顶到 5 块，而上游对超限是 400。
-		if err := replaceBody(enforceCacheControlLimit(body)); err != nil {
+		reqModel = normalizedModel
+	}
+	if next, changed := s.normalizeClientDatelineIfEnabled(ctx, account, body); changed {
+		if err := replaceBody(next); err != nil {
 			return err
 		}
 	}
+	if err := replaceBody(enforceCacheControlLimit(body)); err != nil {
+		return err
+	}
 
-	// 应用模型映射：
-	// - APIKey 账号：使用账号级别的显式映射（如果配置），否则透传原始模型名
-	// - OAuth/SetupToken 账号：使用 Anthropic 标准映射（短ID → 长ID）
 	if reqModel != "" {
-		mappedModel := reqModel
-		mappingSource := ""
-		if account.Type == AccountTypeAPIKey {
-			mappedModel = account.GetMappedModel(reqModel)
-			if mappedModel != reqModel {
-				mappingSource = "account"
-			}
-		}
-		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
-			normalized := claude.NormalizeModelID(reqModel)
-			if normalized != reqModel {
-				mappedModel = normalized
-				mappingSource = "prefix"
-			}
-		}
+		mappedModel := resolveAnthropicUpstreamModel(account, originalModel)
+		mappingSource := "resolved"
 		if mappedModel != reqModel {
 			originalReqModel := reqModel
 			if err := replaceBody(s.replaceModelInBody(body, mappedModel)); err != nil {
@@ -152,6 +136,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// 构建上游请求
 	upstreamReq, wireBody, err := s.buildCountTokensRequest(ctx, c, account, body, token, tokenType, reqModel, shouldMimicClaudeCode)
 	if err != nil {
+		var blocked *BetaBlockedError
+		if errors.As(err, &blocked) {
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", blocked.Message)
+			return err
+		}
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
 	}
@@ -172,6 +161,12 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
 		s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Request failed")
 		return fmt.Errorf("upstream request failed: %w", err)
+	}
+
+	if stopped := s.claudeStoppedUpstreamError(ctx, c, account, resp, reqModel); stopped != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), stopped.ResponseHeaders, s.responseHeaderFilter)
+		s.countTokensError(c, stopped.ClientStatusCode, "upstream_error", stopped.ClientMessage)
+		return stopped
 	}
 
 	// 读取响应体
@@ -196,6 +191,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		if buildErr == nil {
 			retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 			if retryErr == nil {
+				if stopped := s.claudeStoppedUpstreamError(ctx, c, account, retryResp, reqModel); stopped != nil {
+					responseheaders.WriteFilteredHeaders(c.Writer.Header(), stopped.ResponseHeaders, s.responseHeaderFilter)
+					s.countTokensError(c, stopped.ClientStatusCode, "upstream_error", stopped.ClientMessage)
+					return stopped
+				}
 				if retryResp.StatusCode < 400 {
 					// count_tokens 签名重试成功后记录最终 wire body，错误响应仍保留原 body 便于后续处理。
 					acceptedWireBody = retryWireBody
@@ -284,6 +284,11 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 
 	upstreamReq, err := s.buildCountTokensRequestAnthropicAPIKeyPassthrough(ctx, c, account, body, token)
 	if err != nil {
+		var blocked *BetaBlockedError
+		if errors.As(err, &blocked) {
+			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", blocked.Message)
+			return err
+		}
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
 	}
@@ -312,6 +317,11 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		return fmt.Errorf("upstream request failed: %w", err)
 	}
 
+	if stopped := s.claudeStoppedUpstreamError(ctx, c, account, resp, upstreamModel); stopped != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), stopped.ResponseHeaders, s.responseHeaderFilter)
+		s.countTokensError(c, stopped.ClientStatusCode, "upstream_error", stopped.ClientMessage)
+		return stopped
+	}
 	countTokensTooLarge := func(c *gin.Context) {
 		s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Upstream response too large")
 	}
@@ -418,6 +428,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
 		clientBeta = beta
 	}
+	if err := validateAnthropicSafetyBetaForTarget(body, clientBeta, targetURL); err != nil {
+		return nil, err
+	}
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
 	}
@@ -430,7 +443,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
+			if !allowAnthropicRequestHeader(lowerKey, req.URL) {
 				continue
 			}
 			wireKey := resolveWireCasing(key)
@@ -510,13 +523,17 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		ctFingerprint = fp
 		if !ctEnableMPT {
 			accountUUID := account.GetExtraString("account_uuid")
-			if accountUUID != "" && fp.ClientID != "" {
+			if fp.ClientID != "" {
 				wireFingerprint := ctFingerprint
 				if !ctEnableFP {
 					wireFingerprint = nil
 				}
 				wireUA := effectiveBillingUserAgent(ctMimicUserAgent, tokenType, mimicClaudeCode, wireFingerprint, clientHeaders)
-				if newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, wireUA); err == nil && len(newBody) > 0 {
+				newBody, err := s.identityService.RewriteUserIDWithMasking(ctx, body, account, accountUUID, fp.ClientID, wireUA)
+				if err != nil {
+					return nil, nil, err
+				}
+				if len(newBody) > 0 {
 					body = newBody
 				}
 			}
@@ -549,6 +566,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	finalBetaHeader = filterSonnet55ToolsetBeta(finalBetaHeader, body, modelID)
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
+	body = sanitizeCountTokensRequestBody(body)
+	if err := validateAnthropicSafetyBetaForTarget(body, finalBetaHeader, targetURL); err != nil {
+		return nil, nil, err
+	}
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
 		body = sanitized
 	}
@@ -572,17 +593,12 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// 白名单透传 headers（恢复真实 wire casing）
 	for key, values := range clientHeaders {
 		lowerKey := strings.ToLower(key)
-		if allowedHeaders[lowerKey] {
+		if allowAnthropicRequestHeader(lowerKey, req.URL) {
 			wireKey := resolveWireCasing(key)
 			for _, v := range values {
 				addHeaderRaw(req.Header, wireKey, v)
 			}
 		}
-	}
-
-	// OAuth 账号：应用指纹到请求头（受设置开关控制）
-	if ctEnableFP && ctFingerprint != nil {
-		s.identityService.ApplyFingerprint(req, ctFingerprint)
 	}
 
 	// 确保必要的 headers 存在（保持原始大小写）
@@ -599,7 +615,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// OAuth + mimic Claude Code：强制注入 CLI 指纹 header
 	if tokenType == "oauth" && mimicClaudeCode {
-		applyClaudeCodeMimicHeaders(req, false, ctMimicUserAgent)
+		applyClaudeCodeMimicHeaders(req, false, wireUserAgent)
+	}
+	if ctEnableFP && ctFingerprint != nil {
+		s.identityService.ApplyFingerprint(req, ctFingerprint)
 	}
 
 	// 写入最终 anthropic-beta header（Del 一次避免白名单透传值残留）
@@ -640,6 +659,11 @@ func sanitizeCountTokensRequestBody(body []byte) []byte {
 		"stream",
 		"stop_sequences",
 		"stop",
+		"metadata",
+		"service_tier",
+		"speed",
+		"diagnostics",
+		"safeguards",
 		// Anthropic's /v1/messages/count_tokens accepts request-input fields only.
 		// max_tokens is a generation parameter; OAuth mimicry may inject it to
 		// resemble Claude Code messages requests, so it must never reach this endpoint.

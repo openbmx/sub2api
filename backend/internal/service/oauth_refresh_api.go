@@ -257,6 +257,15 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	attemptedAccount := snapshotOAuthRefreshAccount(freshAccount)
 	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		if freshAccount.Platform == PlatformAnthropic && refreshErr == nil && newCredentials != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultRefreshPostPersistCleanupTimeout)
+			defer cancel()
+			newCredentials["_token_version"] = time.Now().UnixMilli()
+			if err := persistAccountCredentials(cleanupCtx, api.accountRepo, freshAccount, newCredentials); err != nil {
+				return nil, fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, err)
+			}
+			return &OAuthRefreshResult{Refreshed: true, NewCredentials: newCredentials, Account: freshAccount}, nil
+		}
 		// A provider implementation may ignore cancellation and return late
 		// credentials. Never persist them after the attempt/cycle boundary.
 		return nil, ctxErr

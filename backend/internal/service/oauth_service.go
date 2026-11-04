@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
@@ -44,9 +45,38 @@ type ClaudeOAuthClient interface {
 
 // OAuthService handles OAuth authentication flows
 type OAuthService struct {
-	sessionStore *oauth.SessionStore
-	proxyRepo    ProxyRepository
-	oauthClient  ClaudeOAuthClient
+	sessionStore   *oauth.SessionStore
+	proxyRepo      ProxyRepository
+	oauthClient    ClaudeOAuthClient
+	refreshResults sync.Map // account ID -> last successful exchange, for retrying persistence only.
+	refreshLocks   sync.Map
+}
+
+type claudeAccountRefreshResult struct {
+	sourceToken string
+	info        TokenInfo
+}
+
+type claudeOAuthProxyResolutionError struct{ err error }
+
+func (e *claudeOAuthProxyResolutionError) Error() string {
+	return "failed to resolve configured OAuth proxy: " + e.err.Error()
+}
+
+func (e *claudeOAuthProxyResolutionError) Unwrap() error { return e.err }
+
+func (s *OAuthService) configuredProxyURL(ctx context.Context, proxyID *int64) (string, error) {
+	if proxyID == nil {
+		return "", nil
+	}
+	proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
+	if err != nil {
+		return "", &claudeOAuthProxyResolutionError{err: err}
+	}
+	if proxy == nil {
+		return "", &claudeOAuthProxyResolutionError{err: fmt.Errorf("proxy %d not found", *proxyID)}
+	}
+	return proxy.URL(), nil
 }
 
 // NewOAuthService creates a new OAuth service
@@ -96,12 +126,9 @@ func (s *OAuthService) generateAuthURLWithScope(ctx context.Context, scope strin
 	}
 
 	// Get proxy URL if specified
-	var proxyURL string
-	if proxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, err := s.configuredProxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Store session
@@ -154,9 +181,10 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Get proxy URL
 	proxyURL := session.ProxyURL
 	if input.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
+		var err error
+		proxyURL, err = s.configuredProxyURL(ctx, input.ProxyID)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -185,12 +213,9 @@ type CookieAuthInput struct {
 // CookieAuth performs OAuth using sessionKey (cookie-based auto-auth)
 func (s *OAuthService) CookieAuth(ctx context.Context, input *CookieAuthInput) (*TokenInfo, error) {
 	// Get proxy URL if specified
-	var proxyURL string
-	if input.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, err := s.configuredProxyURL(ctx, input.ProxyID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine scope and if this is a setup token
@@ -308,16 +333,38 @@ func (s *OAuthService) RefreshAccountToken(ctx context.Context, account *Account
 	if refreshToken == "" {
 		return nil, fmt.Errorf("no refresh token available")
 	}
-
-	var proxyURL string
-	if account.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
+	value, _ := s.refreshLocks.LoadOrStore(account.ID, newContextMutex())
+	lock, ok := value.(*contextMutex)
+	if !ok {
+		return nil, fmt.Errorf("invalid Claude refresh lock")
+	}
+	if err := lock.Lock(ctx); err != nil {
+		return nil, err
+	}
+	defer lock.Unlock()
+	if value, exists := s.refreshResults.Load(account.ID); exists {
+		if previous, ok := value.(claudeAccountRefreshResult); ok && previous.sourceToken == refreshToken {
+			info := previous.info
+			persisted := account.GetCredential("access_token") == info.AccessToken &&
+				(info.RefreshToken == "" || info.RefreshToken == refreshToken)
+			if !persisted {
+				return &info, nil
+			}
+			s.refreshResults.Delete(account.ID)
 		}
 	}
 
-	return s.RefreshToken(ctx, refreshToken, proxyURL)
+	proxyURL, err := s.configuredProxyURL(ctx, account.ProxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := s.RefreshToken(ctx, refreshToken, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	s.refreshResults.Store(account.ID, claudeAccountRefreshResult{sourceToken: refreshToken, info: *info})
+	return info, nil
 }
 
 // Stop stops the session store cleanup goroutine

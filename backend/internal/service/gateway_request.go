@@ -1030,6 +1030,14 @@ const anthropicBetaContextManagementToken = "context-management-2025-06-27"
 //
 // 返回 (sanitized, changed)：changed 表示是否发生实际删除，供调用方决定
 // 是否重用原 body 引用。
+func validateAnthropicSafetyBeta(body []byte, beta string) error {
+	if safeguards := gjson.GetBytes(body, "safeguards"); safeguards.Exists() && safeguards.Type != gjson.Null &&
+		!containsBetaToken(beta, claude.BetaDangerousToolUse) {
+		return &BetaBlockedError{Message: "safeguards requires dangerous-tool-use-2026-09-03 in the final upstream beta configuration"}
+	}
+	return nil
+}
+
 func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string) ([]byte, bool) {
 	if len(body) == 0 {
 		return body, false

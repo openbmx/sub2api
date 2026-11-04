@@ -119,23 +119,27 @@ func shouldMimicToolName(toolType string) bool {
 // 注意：只扫描，不改 body。真正的 body 改写在 applyToolNameRewriteToBody。
 func buildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 	tools := gjson.GetBytes(body, "tools")
-	if !tools.IsArray() {
-		return nil
-	}
-
 	mimicableNames := make([]string, 0)
 	reservedNames := make(map[string]bool)
-	toolsArr := tools.Array()
-	for _, t := range toolsArr {
-		reservedNames[t.Get("name").String()] = true
-		if !shouldMimicToolName(t.Get("type").String()) {
-			continue
+	addTool := func(tool gjson.Result) {
+		name := tool.Get("name").String()
+		if name == "" || reservedNames[name] {
+			return
 		}
-		name := t.Get("name").String()
-		if name == "" {
-			continue
+		reservedNames[name] = true
+		if shouldMimicToolName(tool.Get("type").String()) {
+			mimicableNames = append(mimicableNames, name)
 		}
-		mimicableNames = append(mimicableNames, name)
+	}
+	for _, tool := range tools.Array() {
+		addTool(tool)
+	}
+	for _, message := range gjson.GetBytes(body, "messages").Array() {
+		for _, block := range message.Get("content").Array() {
+			if block.Get("type").String() == "tool_addition" && block.Get("tool.type").String() == "tool_definition" {
+				addTool(block.Get("tool.definition"))
+			}
+		}
 	}
 
 	dynamic := buildDynamicToolMap(mimicableNames)
@@ -209,20 +213,7 @@ func applyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 	if choice := gjson.GetBytes(body, "tool_choice"); choice.Get("type").String() == "tool" {
 		addName(choice.Get("name"))
 	}
-	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
-		messages.ForEach(func(_, msg gjson.Result) bool {
-			content := msg.Get("content")
-			if content.IsArray() {
-				content.ForEach(func(_, block gjson.Result) bool {
-					if block.Get("type").String() == "tool_use" {
-						addName(block.Get("name"))
-					}
-					return true
-				})
-			}
-			return true
-		})
-	}
+	visitProtocolToolNames(gjson.GetBytes(body, "messages"), addName)
 	if len(edits) != 0 {
 		body = applyToolNameSpans(body, edits)
 	}
@@ -347,40 +338,46 @@ func restoreToolNamesJSON(data []byte, rw *ToolNameRewrite) []byte {
 		encoded, _ := json.Marshal(real)
 		edits = append(edits, toolNameSpan{name.Index, name.Index + len(name.Raw), encoded})
 	}
-	var visit func(gjson.Result)
-	visit = func(object gjson.Result) {
-		switch object.Get("type").String() {
-		case "tool_use", "function_call", "response.function_call_arguments.delta", "response.function_call_arguments.done":
-			addName(object.Get("name"))
-		}
-		for _, key := range []string{"content", "output"} {
-			if array := object.Get(key); array.IsArray() {
-				array.ForEach(func(_, item gjson.Result) bool { visit(item); return true })
+	visitProtocolToolNames(gjson.ParseBytes(data), addName)
+	return applyToolNameSpans(data, edits)
+}
+
+// Traverse protocol nodes only; tool arguments and ordinary text are opaque.
+func visitProtocolToolNames(object gjson.Result, visit func(gjson.Result)) {
+	if object.IsArray() {
+		object.ForEach(func(_, item gjson.Result) bool { visitProtocolToolNames(item, visit); return true })
+		return
+	}
+	switch object.Get("type").String() {
+	case "tool_use", "function_call", "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		visit(object.Get("name"))
+	case "tool_reference":
+		visit(object.Get("tool_name"))
+	case "tool_addition", "tool_removal":
+		switch object.Get("tool.type").String() {
+		case "tool_reference":
+			visit(object.Get("tool.name"))
+			visit(object.Get("tool.tool_name"))
+		case "tool_definition":
+			if shouldMimicToolName(object.Get("tool.definition.type").String()) {
+				visit(object.Get("tool.definition.name"))
 			}
-		}
-		for _, key := range []string{"content_block", "item", "message", "response"} {
-			if child := object.Get(key); child.IsObject() {
-				visit(child)
-			}
-		}
-		if choices := object.Get("choices"); choices.IsArray() {
-			choices.ForEach(func(_, choice gjson.Result) bool {
-				for _, key := range []string{"message", "delta"} {
-					if calls := choice.Get(key + ".tool_calls"); calls.IsArray() {
-						calls.ForEach(func(_, call gjson.Result) bool {
-							if kind := call.Get("type").String(); kind == "" || kind == "function" {
-								addName(call.Get("function.name"))
-							}
-							return true
-						})
-					}
-				}
-				return true
-			})
 		}
 	}
-	visit(gjson.ParseBytes(data))
-	return applyToolNameSpans(data, edits)
+	for _, key := range []string{"messages", "content", "output", "tool_references", "content_block", "item", "message", "response"} {
+		if child := object.Get(key); child.IsArray() || child.IsObject() {
+			visitProtocolToolNames(child, visit)
+		}
+	}
+	for _, choice := range object.Get("choices").Array() {
+		for _, key := range []string{"message", "delta"} {
+			for _, call := range choice.Get(key + ".tool_calls").Array() {
+				if kind := call.Get("type").String(); kind == "" || kind == "function" {
+					visit(call.Get("function.name"))
+				}
+			}
+		}
+	}
 }
 
 func applyToolNameSpans(data []byte, edits []toolNameSpan) []byte {

@@ -95,3 +95,11 @@ func (c *identityCache) SetMaskedSessionID(ctx context.Context, accountID int64,
 	key := maskedSessionKey(accountID)
 	return c.rdb.Set(ctx, key, sessionID, maskedSessionTTL).Err()
 }
+
+func (c *identityCache) GetOrCreateMaskedSessionID(ctx context.Context, accountID int64, candidate string) (string, error) {
+	return c.rdb.Eval(ctx, `
+local value = redis.call('GET', KEYS[1])
+if not value then value = ARGV[1] end
+redis.call('SET', KEYS[1], value, 'EX', ARGV[2])
+return value`, []string{maskedSessionKey(accountID)}, candidate, int(maskedSessionTTL/time.Second)).Text()
+}

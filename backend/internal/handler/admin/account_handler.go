@@ -1529,8 +1529,14 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		}
 	}
 
+	status := ""
+	if account.Platform == service.PlatformAnthropic && account.IsOAuth() &&
+		account.Status == service.StatusError && service.IsClaudeRefreshAuthenticationError(account.ErrorMessage) {
+		status = service.StatusActive
+	}
 	updatedAccount, err := h.adminService.UpdateAccount(ctx, account.ID, &service.UpdateAccountInput{
 		Credentials: newCredentials,
+		Status:      status,
 	})
 	if err != nil {
 		return nil, "", err

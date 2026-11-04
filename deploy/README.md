@@ -604,55 +604,16 @@ sudo systemctl status redis
 
 ## TLS Fingerprint Configuration
 
-Sub2API supports TLS fingerprint simulation to make requests appear as if they come from the official Claude CLI (Node.js client).
+Enable TLS fingerprinting in the Anthropic OAuth or setup-token account editor, then choose a profile from the managed profile list. Profiles are stored in the database and synchronized through the profile cache.
 
-> **💡 Tip:** Visit **[tls.sub2api.org](https://tls.sub2api.org/)** to get TLS fingerprint information for different devices and browsers.
+- Fingerprinting is off until the account enables it.
+- An enabled account without a fixed profile uses the built-in default, currently named `Built-in Default (Node.js 24.x)`.
+- A fixed profile keeps the account on that profile. The random option (`-1`) selects a profile on each resolution and can alternate between connection pools.
+- The connection pool includes account, proxy and effective profile contents. Editing a profile creates a matching transport; selecting an existing profile can reuse its pool.
+- The fingerprint transport uses HTTP/1.1. Profile ALPN must be empty or `http/1.1`; `h2` and `h2c` are rejected.
+- Direct, HTTP/HTTPS CONNECT and SOCKS5 routes preserve the selected target TLS profile. HTTPS proxies validate their own TLS connection before creating the target tunnel.
+- Connection establishment has a 30-second budget and honors cancellation. Certificate verification remains enabled.
 
-### Default Behavior
+Use the account settings and managed profiles to control the effective transport. The legacy `gateway.tls_fingerprint` YAML fields do not select account profiles.
 
-- Built-in `claude_cli_v2` profile simulates Node.js 20.x + OpenSSL 3.x
-- JA3 Hash: `1a28e69016765d92e3b381168d68922c`
-- JA4: `t13d5911h1_a33745022dd6_1f22a2ca17c4`
-- Profile selection: `accountID % profileCount`
-
-### Configuration
-
-```yaml
-gateway:
-  tls_fingerprint:
-    enabled: true  # Global switch
-    profiles:
-      # Simple profile (uses default cipher suites)
-      profile_1:
-        name: "Profile 1"
-
-      # Profile with custom cipher suites (use compact array format)
-      profile_2:
-        name: "Profile 2"
-        cipher_suites: [4866, 4867, 4865, 49199, 49195, 49200, 49196]
-        curves: [29, 23, 24]
-        point_formats: 0
-
-      # Another custom profile
-      profile_3:
-        name: "Profile 3"
-        cipher_suites: [4865, 4866, 4867, 49199, 49200]
-        curves: [29, 23, 24, 25]
-```
-
-### Profile Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Display name (required) |
-| `cipher_suites` | []uint16 | Cipher suites in decimal. Empty = default |
-| `curves` | []uint16 | Elliptic curves in decimal. Empty = default |
-| `point_formats` | []uint8 | EC point formats. Empty = default |
-
-### Common Values Reference
-
-**Cipher Suites (TLS 1.3):** `4865` (AES_128_GCM), `4866` (AES_256_GCM), `4867` (CHACHA20)
-
-**Cipher Suites (TLS 1.2):** `49195`, `49196`, `49199`, `49200` (ECDHE variants)
-
-**Curves:** `29` (X25519), `23` (P-256), `24` (P-384), `25` (P-521)
+The built-in profile name describes its implementation baseline. Matching a particular official Claude Code release requires a capture for that version and platform; changing the advertised version alone does not establish a match.

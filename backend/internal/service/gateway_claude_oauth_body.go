@@ -403,39 +403,35 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 			return nil, fmt.Errorf("load Claude account identity: %w", err)
 		}
 		if fp != nil {
-			if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body); uid != "" {
+			caller := &SessionContext{ClientIP: c.ClientIP(), UserAgent: c.GetHeader("User-Agent"), APIKeyID: getAPIKeyIDFromContext(c)}
+			if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body, caller); uid != "" {
 				normalizeOpts.injectMetadata = true
 				normalizeOpts.metadataUserID = uid
 			}
 		}
 	}
 
-	// The synthetic instruction message must not become the session seed.
-	systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
-	if systemPromptInjectionEnabled {
-		systemPromptBlocks = claudeOAuthSystemPromptBlocksForModel(model, systemPromptBlocks)
-		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, normalizeSystemParam(systemRaw), systemPrompt, systemPromptBlocks)
+	body, _ = s.rewriteClaudeOAuthInputBody(ctx, c, body, systemRaw, model, normalizeOpts)
+	return body, nil
+}
+
+func (s *GatewayService) rewriteClaudeOAuthInputBody(ctx context.Context, c *gin.Context, body []byte, systemRaw any, model string, opts claudeOAuthNormalizeOptions) ([]byte, string) {
+	enabled, prompt, blocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
+	if enabled {
+		blocks = claudeOAuthSystemPromptBlocksForModel(model, blocks)
+		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, normalizeSystemParam(systemRaw), prompt, blocks)
 	}
-
-	body, _ = normalizeClaudeOAuthRequestBody(body, model, normalizeOpts)
-
-	// Phase D+E+F: messages cache 策略 + 工具名混淆 + tools[-1] 断点
-	// 对齐 Parrot transform_request 里剩余的字段级改写。顺序有语义约束：
-	//   1) messages cache：仅在配置开启时清除客户端断点并注入代理断点
-	//   2) tool rewrite：最后改 tools[*].name / tool_choice.name 并在 tools[-1]
-	//      上打断点；mapping 存入 gin.Context 供响应侧精确还原工具名。
+	body, model = normalizeClaudeOAuthRequestBody(body, model, opts)
 	body = s.rewriteMessageCacheControlIfEnabled(ctx, body)
-
-	if rw := buildToolNameRewriteFromBody(body); rw != nil {
-		body = applyToolNameRewriteToBody(body, rw)
+	if rewrite := buildToolNameRewriteFromBody(body); rewrite != nil {
+		body = applyToolNameRewriteToBody(body, rewrite)
 		if c != nil {
-			c.Set(toolNameRewriteKey, rw)
+			c.Set(toolNameRewriteKey, rewrite)
 		}
 	} else {
 		body = applyToolsLastCacheBreakpoint(body)
 	}
-
-	return body, nil
+	return body, model
 }
 
 // buildOAuthMetadataUserIDFromBody 是 buildOAuthMetadataUserID 的变体，
@@ -450,6 +446,7 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 	account *Account,
 	fp *Fingerprint,
 	body []byte,
+	callers ...*SessionContext,
 ) string {
 	_ = ctx
 	if account == nil {
@@ -472,6 +469,9 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 	var clientDiscriminator string
 	if fp != nil {
 		clientDiscriminator = fp.ClientID
+	}
+	if len(callers) > 0 && callers[0] != nil {
+		clientDiscriminator = sessionContextDiscriminator(callers[0])
 	}
 	seed := buildStableSessionSeed(account.ID, clientDiscriminator, extractFirstUserText(body))
 	sessionID := generateSessionUUID(seed)
@@ -1061,6 +1061,7 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 	if len(body) == 0 {
 		return body
 	}
+	body = stripDeferredToolCacheControl(body)
 
 	invalidThinking, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
 	out := body
@@ -1081,6 +1082,10 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 	}
 
 	count := len(messagePaths) + len(toolPaths) + len(systemPaths)
+	automaticPath := automaticCacheControlPath(out)
+	if automaticPath != "" && !gjson.GetBytes(out, automaticPath).Exists() {
+		count++
+	}
 	if count <= maxCacheControlBlocks {
 		if modified {
 			return out
@@ -1092,6 +1097,9 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 	remaining := count - maxCacheControlBlocks
 	for i := len(toolPaths) - 1; i >= 0 && remaining > 0; i-- {
 		path := toolPaths[i]
+		if path == automaticPath {
+			continue
+		}
 		if !gjson.GetBytes(out, path).Exists() {
 			continue
 		}
@@ -1101,10 +1109,15 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		}
 		out = next
 		modified = true
-		remaining--
+		if path != automaticPath {
+			remaining--
+		}
 	}
 
 	for _, path := range messagePaths {
+		if path == automaticPath {
+			continue
+		}
 		if remaining <= 0 {
 			break
 		}
@@ -1117,11 +1130,16 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		}
 		out = next
 		modified = true
-		remaining--
+		if path != automaticPath {
+			remaining--
+		}
 	}
 
 	for i := len(systemPaths) - 1; i >= 0 && remaining > 0; i-- {
 		path := systemPaths[i]
+		if path == automaticPath {
+			continue
+		}
 		if !gjson.GetBytes(out, path).Exists() {
 			continue
 		}
@@ -1131,13 +1149,49 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		}
 		out = next
 		modified = true
-		remaining--
+		if path != automaticPath {
+			remaining--
+		}
 	}
 
 	if modified {
 		return out
 	}
 	return body
+}
+
+func automaticCacheControlPath(body []byte) string {
+	if !gjson.GetBytes(body, "cache_control").IsObject() {
+		return ""
+	}
+	messages := gjson.GetBytes(body, "messages").Array()
+	for i := len(messages) - 1; i >= 0; i-- {
+		content := messages[i].Get("content")
+		if content.Type == gjson.String && strings.TrimSpace(content.String()) != "" {
+			return fmt.Sprintf("messages.%d.content.cache_control", i)
+		}
+		blocks := content.Array()
+		for j := len(blocks) - 1; j >= 0; j-- {
+			kind := blocks[j].Get("type").String()
+			if kind != "thinking" && kind != "redacted_thinking" {
+				return fmt.Sprintf("messages.%d.content.%d.cache_control", i, j)
+			}
+		}
+	}
+	system := gjson.GetBytes(body, "system")
+	if system.Type == gjson.String && system.String() != "" {
+		return "system.cache_control"
+	}
+	if blocks := system.Array(); len(blocks) > 0 {
+		return fmt.Sprintf("system.%d.cache_control", len(blocks)-1)
+	}
+	tools := gjson.GetBytes(body, "tools").Array()
+	for i := len(tools) - 1; i >= 0; i-- {
+		if !isDeferredLoadingTool(tools[i]) {
+			return fmt.Sprintf("tools.%d.cache_control", i)
+		}
+	}
+	return ""
 }
 
 // normalizeCacheControlTTLOrder raises earlier ephemeral breakpoints to 1h when
@@ -1150,6 +1204,13 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 // written at the 1h rate, so the earlier breakpoints add no cache write cost.
 // Requests with a valid order are returned unchanged.
 func normalizeCacheControlTTLOrder(body []byte) []byte {
+	if target := automaticCacheControlPath(body); target != "" &&
+		gjson.GetBytes(body, target+".ttl").String() == cacheTTLTarget1h &&
+		gjson.GetBytes(body, "cache_control.ttl").String() != cacheTTLTarget1h {
+		if next, err := sjson.SetBytes(body, "cache_control.ttl", cacheTTLTarget1h); err == nil {
+			body = next
+		}
+	}
 	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
 	paths := make([]string, 0, len(toolPaths)+len(systemPaths)+len(messagePaths)+1)
 	paths = append(paths, toolPaths...)

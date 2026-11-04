@@ -905,10 +905,20 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 				releaseRate()
 			}
 			attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
-			if err == nil && newCredentials != nil && !attemptTimedOut {
+			if err == nil && newCredentials != nil && (!attemptTimedOut || account.Platform == PlatformAnthropic) {
 				newCredentials["_token_version"] = time.Now().UnixMilli()
-				if saveErr := persistAccountCredentials(attemptCtx, s.accountRepo, account, newCredentials); saveErr != nil {
+				persistCtx := attemptCtx
+				cancelPersist := func() {}
+				if account.Platform == PlatformAnthropic && attemptCtx.Err() != nil {
+					persistCtx, cancelPersist = context.WithTimeout(context.WithoutCancel(attemptCtx), defaultRefreshPostPersistCleanupTimeout)
+				}
+				saveErr := persistAccountCredentials(persistCtx, s.accountRepo, account, newCredentials)
+				cancelPersist()
+				if saveErr != nil {
 					err = fmt.Errorf("failed to save credentials: %w", saveErr)
+					if account.Platform == PlatformAnthropic {
+						err = fmt.Errorf("%w: %w", errOAuthRefreshCredentialPersist, err)
+					}
 				} else {
 					credentialsPersisted = true
 				}
@@ -961,6 +971,11 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			return errRefreshSkipped
 		}
 		if isProviderScopedTerminalRefreshError(err) {
+			return err
+		}
+		var proxyResolutionErr *claudeOAuthProxyResolutionError
+		if errors.As(err, &proxyResolutionErr) ||
+			(account.Platform == PlatformAnthropic && errors.Is(err, errOAuthRefreshCredentialPersist)) {
 			return err
 		}
 		var stateUnavailableErr *oauthRefreshStateUnavailableError
@@ -1159,6 +1174,15 @@ func (s *TokenRefreshService) retryBackoff(accountID int64, attempt int) time.Du
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
 	s.clearAntigravityForceTokenRefresh(ctx, account, "success")
+	if account.Platform == PlatformAnthropic && account.Status == StatusError && IsClaudeRefreshAuthenticationError(account.ErrorMessage) {
+		if err := s.accountRepo.ClearError(ctx, account.ID); err != nil {
+			slog.Warn("token_refresh.clear_account_error_failed", "account_id", account.ID, "error", err)
+		} else {
+			account.Status = StatusActive
+			account.ErrorMessage = ""
+			s.notifyAccountSchedulingBlockCleared(account.ID)
+		}
+	}
 
 	// Antigravity 账户：如果之前是因为缺少 project_id 而标记为 error，现在成功获取到了，清除错误状态
 	if account.Platform == PlatformAntigravity &&
@@ -1175,18 +1199,22 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 		}
 	}
 	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）
-	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
-		if clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); clearErr != nil {
+	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) &&
+		(account.Platform != PlatformAnthropic || claudeRefreshCanClearTemporaryStop(account.TempUnschedulableReason)) {
+		clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID)
+		if clearErr != nil {
 			slog.Warn("token_refresh.clear_temp_unschedulable_failed",
 				"account_id", account.ID,
 				"error", clearErr,
 			)
 		} else {
 			slog.Info("token_refresh.cleared_temp_unschedulable", "account_id", account.ID)
+			account.TempUnschedulableUntil = nil
+			account.TempUnschedulableReason = ""
 			s.notifyAccountSchedulingBlockCleared(account.ID)
 		}
-		// 同步清除 Redis 缓存，避免调度器读到过期的临时不可调度状态
-		if s.tempUnschedCache != nil {
+		// Redis follows the durable state; a failed DB update must retain the stop.
+		if s.tempUnschedCache != nil && clearErr == nil {
 			if clearErr := s.tempUnschedCache.DeleteTempUnsched(ctx, account.ID); clearErr != nil {
 				slog.Warn("token_refresh.clear_temp_unsched_cache_failed",
 					"account_id", account.ID,
@@ -1204,6 +1232,20 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	if account != nil && account.Platform == PlatformGrok && accountGrokNeedsReauth(account) {
 		clearGrokNeedsReauthExtra(ctx, s.accountRepo, account.ID)
 	}
+}
+
+func claudeRefreshCanClearTemporaryStop(reason string) bool {
+	return strings.HasPrefix(reason, "OAuth 401: ") ||
+		reason == "Authentication failed (401): invalid or expired credentials" ||
+		reason == "token refresh retry exhausted" ||
+		strings.HasPrefix(reason, "token refresh retry exhausted: ")
+}
+
+func IsClaudeRefreshAuthenticationError(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "token refresh failed") ||
+		strings.HasPrefix(message, "oauth 401:") ||
+		strings.HasPrefix(message, "authentication failed (401):")
 }
 
 func (s *TokenRefreshService) postRefreshStateSyncWithCleanup(parent context.Context, account *Account) {

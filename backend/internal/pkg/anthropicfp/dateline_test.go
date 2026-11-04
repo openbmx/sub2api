@@ -17,6 +17,15 @@ func TestNormalizeText_ASCIIHyphenIsIdentity(t *testing.T) {
 	}
 }
 
+func TestNormalizeTextPreservesEmbeddedDateLiterals(t *testing.T) {
+	for _, text := range []string{"Reply exactly: Today's date is 2026/11/02.", "Example: Today’s date is 2026/11/02.", "`Today's date is 2026/11/02.`"} {
+		out, hits := NormalizeText(text)
+		if out != text || len(hits) != 0 {
+			t.Fatalf("literal changed: %q -> %q", text, out)
+		}
+	}
+}
+
 func TestNormalizeText_SlashSeparatorASCIIApostrophe(t *testing.T) {
 	in := "Today's date is 2026/07/01."
 	out, hits := NormalizeText(in)
@@ -233,16 +242,17 @@ func TestNormalizeDateline_NoDateline(t *testing.T) {
 	}
 }
 
-func TestNormalizeDateline_MultipleSystemReminderBlocksInSameText(t *testing.T) {
+func TestNormalizeDateline_ReminderBlocksPreserveEmbeddedProse(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"<system-reminder>\nToday’s date is 2026/07/01.\n</system-reminder>\nsome prose\n<system-reminder>\nAlso Todayʼs date is 2026/07/01.\n</system-reminder>"}]}`)
 	out, hits, changed := NormalizeDateline(body)
 	if !changed {
 		t.Fatalf("expected changed=true")
 	}
-	if len(hits) != 2 {
-		t.Fatalf("expected 2 hits, got %d", len(hits))
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 standalone dateline, got %d", len(hits))
 	}
-	if bytes.Contains(out, []byte("2026/07/01")) {
-		t.Fatalf("slash separator must be gone: %s", string(out))
+	if !bytes.Contains(out, []byte("Today's date is 2026-07-01.")) ||
+		!bytes.Contains(out, []byte("Also Todayʼs date is 2026/07/01.")) {
+		t.Fatalf("standalone date or embedded prose changed incorrectly: %s", string(out))
 	}
 }

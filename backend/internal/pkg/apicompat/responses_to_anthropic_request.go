@@ -14,10 +14,20 @@ import (
 // enables Anthropic platform groups to accept OpenAI Responses API requests
 // by converting them to the native /v1/messages format before forwarding upstream.
 func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
+	return responsesToAnthropicRequest(req, false)
+}
+
+// ResponsesToClaudeRequest applies native Claude model capabilities and output limits.
+func ResponsesToClaudeRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
+	return responsesToAnthropicRequest(req, true)
+}
+
+func responsesToAnthropicRequest(req *ResponsesRequest, nativeClaude bool) (*AnthropicRequest, error) {
 	isOpus55 := claude.IsOpus55(req.Model)
 	isSonnet55 := claude.IsSonnet55(req.Model)
 	isHaiku55 := claude.IsHaiku55(req.Model)
-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, isOpus55 || isSonnet55 || isHaiku55)
+	adaptive := isOpus55 || isSonnet55 || isHaiku55 || nativeClaude && claude.SupportsAdaptiveThinking(req.Model)
+	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, adaptive)
 	if err != nil {
 		return nil, err
 	}
@@ -133,12 +143,38 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 	// reasoning.effort → output_config.effort + thinking
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		effort := mapResponsesEffortToAnthropic(req.Reasoning.Effort)
+		switch effort {
+		case "none", "minimal", "disabled":
+			if !nativeClaude || !strings.Contains(strings.ToLower(req.Model), "claude-") {
+				break
+			}
+			if claude.RequiresAdaptiveThinking(req.Model) {
+				return nil, fmt.Errorf("%s requires adaptive thinking", req.Model)
+			}
+			return out, nil
+		}
+		if adaptive {
+			out.Thinking = &AnthropicThinking{Type: "adaptive"}
+			out.OutputConfig = &AnthropicOutputConfig{Effort: effort}
+			return out, nil
+		}
 		out.OutputConfig = &AnthropicOutputConfig{Effort: effort}
 		// Enable thinking for non-low efforts
 		if effort != "low" {
 			out.Thinking = &AnthropicThinking{
 				Type:         "enabled",
 				BudgetTokens: defaultThinkingBudget(effort),
+			}
+			// Generated budgets must fit the caller's explicit total output cap.
+			// Native Messages requests retain their own interleaved budget semantics.
+			if nativeClaude && strings.Contains(strings.ToLower(req.Model), "claude-") && out.Thinking.BudgetTokens >= out.MaxTokens {
+				if req.MaxOutputTokens == nil || *req.MaxOutputTokens <= 0 {
+					out.MaxTokens = out.Thinking.BudgetTokens + 1024
+				} else if out.MaxTokens <= 1024 {
+					return nil, fmt.Errorf("max_output_tokens must exceed 1024 for manual thinking")
+				} else {
+					out.Thinking.BudgetTokens = out.MaxTokens - 1
+				}
 			}
 		}
 	}

@@ -837,6 +837,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 	if input.Status != "" {
+		if input.Status == StatusActive && account.Status == StatusError && account.Platform == PlatformAnthropic &&
+			account.IsOAuth() && len(input.Credentials) > 0 && IsClaudeRefreshAuthenticationError(account.ErrorMessage) {
+			account.ErrorMessage = ""
+		}
 		account.Status = input.Status
 	}
 	if input.ExpiresAt != nil {

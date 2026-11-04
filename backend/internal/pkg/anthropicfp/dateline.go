@@ -12,7 +12,6 @@ package anthropicfp
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -97,47 +96,63 @@ func collectMatches(text string, re *regexp.Regexp, sep string) []datelineMatch 
 	return out
 }
 
-// NormalizeText replaces every fingerprinted dateline sentence in text with
-// its canonical form. It returns the possibly-rewritten text and the list of
+// NormalizeText canonicalizes standalone environment datelines outside fenced code.
+// It returns the possibly-rewritten text and the list of
 // hits observed. When no match is found the original string is returned
 // verbatim (byte-identical), and the returned hit slice is nil.
 func NormalizeText(text string) (string, []DatelineHit) {
 	if !strings.Contains(text, "date is ") {
 		return text, nil
 	}
-	matches := collectMatches(text, datelineRegexHyphen, "-")
-	matches = append(matches, collectMatches(text, datelineRegexSlash, "/")...)
-	if len(matches) == 0 {
-		return text, nil
-	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].start < matches[j].start })
-
-	var b strings.Builder
-	b.Grow(len(text))
-	prev := 0
-	hits := make([]DatelineHit, 0, len(matches))
-	changed := false
-	for _, m := range matches {
-		full := text[m.start:m.end]
-		canonical := canonicalize(m.year, m.month, m.day)
-		if canonical == full {
-			// Already canonical: no rewrite, no hit.
+	var out strings.Builder
+	out.Grow(len(text))
+	var hits []DatelineHit
+	fence := ""
+	for _, line := range strings.SplitAfter(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		marker := ""
+		if strings.HasPrefix(trimmed, "```") {
+			marker = "```"
+		}
+		if strings.HasPrefix(trimmed, "~~~") {
+			marker = "~~~"
+		}
+		if marker != "" {
+			switch fence {
+			case "":
+				fence = marker
+			case marker:
+				fence = ""
+			}
+			_, _ = out.WriteString(line)
 			continue
 		}
-		_, _ = b.WriteString(text[prev:m.start])
-		_, _ = b.WriteString(canonical)
-		prev = m.end
-		changed = true
-		hits = append(hits, DatelineHit{
-			ApostropheVariant: apostropheVariant(m.apoRune),
-			DateSeparator:     m.sep,
-		})
+		if fence != "" {
+			_, _ = out.WriteString(line)
+			continue
+		}
+		matches := collectMatches(trimmed, datelineRegexHyphen, "-")
+		matches = append(matches, collectMatches(trimmed, datelineRegexSlash, "/")...)
+		if len(matches) != 1 || matches[0].start != 0 || matches[0].end != len(trimmed) {
+			_, _ = out.WriteString(line)
+			continue
+		}
+		match := matches[0]
+		canonical := canonicalize(match.year, match.month, match.day)
+		if canonical == trimmed {
+			_, _ = out.WriteString(line)
+			continue
+		}
+		start := strings.Index(line, trimmed)
+		_, _ = out.WriteString(line[:start])
+		_, _ = out.WriteString(canonical)
+		_, _ = out.WriteString(line[start+len(trimmed):])
+		hits = append(hits, DatelineHit{ApostropheVariant: apostropheVariant(match.apoRune), DateSeparator: match.sep})
 	}
-	if !changed {
+	if len(hits) == 0 {
 		return text, nil
 	}
-	_, _ = b.WriteString(text[prev:])
-	return b.String(), hits
+	return out.String(), hits
 }
 
 // normalizeSystemReminderScopedText scans only the <system-reminder> blocks
@@ -161,7 +176,9 @@ func normalizeSystemReminderScopedText(text string) (string, []DatelineHit) {
 	for _, loc := range locs {
 		_, _ = b.WriteString(text[prev:loc[0]])
 		block := text[loc[0]:loc[1]]
-		normalized, blockHits := NormalizeText(block)
+		inner := block[len("<system-reminder>") : len(block)-len("</system-reminder>")]
+		normalizedInner, blockHits := NormalizeText(inner)
+		normalized := "<system-reminder>" + normalizedInner + "</system-reminder>"
 		if normalized != block {
 			changed = true
 		}

@@ -140,6 +140,7 @@ func defaultFingerprint() Fingerprint {
 type Fingerprint struct {
 	ClientID                string
 	UserAgent               string
+	ClientUserAgent         string `json:",omitempty"` // Observed software version before applying the configured floor.
 	StainlessLang           string
 	StainlessPackageVersion string
 	StainlessOS             string
@@ -161,6 +162,7 @@ type IdentityCache interface {
 	// SetMaskedSessionID 设置固定的会话ID，TTL 为 15 分钟
 	// 每次调用都会刷新 TTL
 	SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error
+	GetOrCreateMaskedSessionID(ctx context.Context, accountID int64, candidate string) (string, error)
 }
 
 // IdentityService 管理OAuth账号的请求身份指纹
@@ -220,8 +222,16 @@ func (s *IdentityService) GetOrCreateFingerprint(ctx context.Context, accountID 
 		} else {
 			// 客户端送来更新版本时的常规升级：merge 语义 — 仅更新请求中实际携带的字段，
 			// 保留缓存值，避免缺失的头被硬编码默认值覆盖（如新 CLI 版本 + 旧 SDK 默认值的不一致）
-			if uaAcceptable && isNewerVersion(clientUA, cached.UserAgent) {
+			observedUA := cached.ClientUserAgent
+			if observedUA == "" {
+				observedUA = cached.UserAgent
+			}
+			if uaAcceptable && isNewerVersion(clientUA, observedUA) {
+				wireUA := cached.UserAgent
 				mergeHeadersIntoFingerprint(cached, headers)
+				if isNewerVersion(wireUA, cached.UserAgent) {
+					cached.UserAgent = wireUA
+				}
 				needWrite = true
 				logger.LegacyPrintf("service.identity", "Updated fingerprint for account %d: %s (merge update)", accountID, clientUA)
 			}
@@ -291,6 +301,7 @@ func (s *IdentityService) createFingerprintFromHeaders(headers http.Header) *Fin
 		// 首次创建与缓存命中路径共用同一个版本下限：合法但过旧的 claude-cli UA
 		// 落库时同样不能低于运行期生效版本（EffectiveCLIVersion），否则新账号一开始就带着过旧的持久身份。
 		fp.UserAgent, _ = floorClaudeCLIUserAgentVersion(ua)
+		fp.ClientUserAgent = ua
 	} else {
 		fp.UserAgent = defaultFingerprint().UserAgent
 	}
@@ -315,12 +326,17 @@ func mergeHeadersIntoFingerprint(fp *Fingerprint, headers http.Header) {
 	// User-Agent：版本升级的触发条件，一定存在
 	if ua := headers.Get("User-Agent"); ua != "" {
 		fp.UserAgent = ua
+		fp.ClientUserAgent = ua
 	}
 	// X-Stainless-* 头：仅在请求中实际携带时才更新，否则保留缓存值
 	mergeHeader(headers, "X-Stainless-Lang", &fp.StainlessLang)
 	mergeHeader(headers, "X-Stainless-Package-Version", &fp.StainlessPackageVersion)
-	mergeHeader(headers, "X-Stainless-OS", &fp.StainlessOS)
-	mergeHeader(headers, "X-Stainless-Arch", &fp.StainlessArch)
+	if fp.StainlessOS == "" {
+		mergeHeader(headers, "X-Stainless-OS", &fp.StainlessOS)
+	}
+	if fp.StainlessArch == "" {
+		mergeHeader(headers, "X-Stainless-Arch", &fp.StainlessArch)
+	}
 	mergeHeader(headers, "X-Stainless-Runtime", &fp.StainlessRuntime)
 	mergeHeader(headers, "X-Stainless-Runtime-Version", &fp.StainlessRuntimeVersion)
 }
@@ -380,7 +396,7 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 // 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
 // 避免重新序列化导致 thinking 块等内容被修改。
 func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
-	if len(body) == 0 || accountUUID == "" || cachedClientID == "" {
+	if len(body) == 0 || cachedClientID == "" {
 		return body, nil
 	}
 
@@ -469,21 +485,9 @@ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []b
 	}
 
 	// 获取或生成固定的伪装 session ID
-	maskedSessionID, err := s.cache.GetMaskedSessionID(ctx, account.ID)
+	maskedSessionID, err := s.cache.GetOrCreateMaskedSessionID(ctx, account.ID, generateRandomUUID())
 	if err != nil {
-		logger.LegacyPrintf("service.identity", "Warning: failed to get masked session ID for account %d: %v", account.ID, err)
-		return newBody, nil
-	}
-
-	if maskedSessionID == "" {
-		// 首次或已过期，生成新的伪装 session ID
-		maskedSessionID = generateRandomUUID()
-		logger.LegacyPrintf("service.identity", "Generated new masked session ID for account %d: %s", account.ID, maskedSessionID)
-	}
-
-	// 刷新 TTL（每次请求都刷新，保持 15 分钟有效期）
-	if err := s.cache.SetMaskedSessionID(ctx, account.ID, maskedSessionID); err != nil {
-		logger.LegacyPrintf("service.identity", "Warning: failed to set masked session ID for account %d: %v", account.ID, err)
+		return nil, fmt.Errorf("load Claude masked session: %w", err)
 	}
 
 	// 用 FormatMetadataUserID 重建（保持与 RewriteUserID 相同的格式）

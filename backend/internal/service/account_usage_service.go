@@ -1614,6 +1614,10 @@ func (s *AccountUsageService) tryClearRecoverableAccountError(ctx context.Contex
 	if msg == "" {
 		return
 	}
+	if account.Platform == PlatformAnthropic && (strings.Contains(msg, "token refresh failed") ||
+		strings.Contains(msg, "invalid_grant") || strings.Contains(msg, "invalid_client")) {
+		return
+	}
 
 	if !strings.Contains(msg, "token refresh failed") &&
 		!strings.Contains(msg, "invalid_client") &&
