@@ -127,6 +127,7 @@ func cloneGroupModelPricing(value []ChannelModelPricing) []ChannelModelPricing {
 		entry.CacheReadPrice = cloneGroupValuePointer(pricing.CacheReadPrice)
 		entry.FastMultiplier = cloneGroupValuePointer(pricing.FastMultiplier)
 		entry.FlexMultiplier = cloneGroupValuePointer(pricing.FlexMultiplier)
+		entry.UltrafastMultiplier = cloneGroupValuePointer(pricing.UltrafastMultiplier)
 		entry.ImageInputPrice = cloneGroupValuePointer(pricing.ImageInputPrice)
 		entry.ImageOutputPrice = cloneGroupValuePointer(pricing.ImageOutputPrice)
 		entry.PerRequestPrice = cloneGroupValuePointer(pricing.PerRequestPrice)
@@ -212,6 +213,7 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		AllowMessagesDispatch:           source.AllowMessagesDispatch,
 		AllowLive:                       source.AllowLive,
 		ForceOpenAIFast:                 source.ForceOpenAIFast,
+		ForceOpenAIUltrafast:            source.ForceOpenAIUltrafast,
 		FreeOpenAIFast:                  source.FreeOpenAIFast,
 		RequireOAuthOnly:                source.RequireOAuthOnly,
 		RequirePrivacySet:               source.RequirePrivacySet,

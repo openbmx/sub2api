@@ -26,7 +26,9 @@ func responsesToAnthropicRequest(req *ResponsesRequest, nativeClaude bool) (*Ant
 	isOpus55 := claude.IsOpus55(req.Model)
 	isSonnet55 := claude.IsSonnet55(req.Model)
 	isHaiku55 := claude.IsHaiku55(req.Model)
-	adaptive := isOpus55 || isSonnet55 || isHaiku55 || nativeClaude && claude.SupportsAdaptiveThinking(req.Model)
+	isFableOrMythos52 := claude.IsFable52(req.Model) || claude.IsMythos52(req.Model)
+	isAdaptiveModel := isOpus55 || isSonnet55 || isHaiku55 || isFableOrMythos52
+	adaptive := isAdaptiveModel || nativeClaude && claude.SupportsAdaptiveThinking(req.Model)
 	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, adaptive || nativeClaude)
 	if err != nil {
 		return nil, err
@@ -67,13 +69,14 @@ func responsesToAnthropicRequest(req *ResponsesRequest, nativeClaude bool) (*Ant
 		out.ToolChoice = tc
 	}
 
-	// The 5.5 models reject manual thinking. Opus/Sonnet 5.5 additionally reject
+	// The 5.5 models and Fable/Mythos 5.2 reject manual thinking.
+	// Fable/Mythos 5.2 and Opus/Sonnet 5.5 additionally reject
 	// forced tool use; Haiku 5.5 accepts it (starts with the tool call, no thinking
 	// block). Sonnet 5.5 supports between_tools to disable up-front thinking;
 	// Haiku 5.5 uses disabled (at high effort or below) instead.
 	// Resolve the upstream model before conversion: client aliases need not
 	// identify a Claude model.
-	if isOpus55 || isSonnet55 || isHaiku55 {
+	if isAdaptiveModel {
 		var choice struct {
 			Type string `json:"type"`
 		}
@@ -86,8 +89,10 @@ func responsesToAnthropicRequest(req *ResponsesRequest, nativeClaude bool) (*Ant
 			return nil, fmt.Errorf("%s does not support forced tool_choice; use auto or none", req.Model)
 		}
 		effort := "medium"
-		if isSonnet55 {
+		if isSonnet55 || isFableOrMythos52 {
 			effort = "high"
+		}
+		if isSonnet55 {
 			if req.Temperature != nil && *req.Temperature != 1 {
 				return nil, fmt.Errorf("claude-sonnet-5-5 does not support non-default temperature")
 			}
@@ -95,15 +100,15 @@ func responsesToAnthropicRequest(req *ResponsesRequest, nativeClaude bool) (*Ant
 				return nil, fmt.Errorf("claude-sonnet-5-5 does not support non-default top_p")
 			}
 		}
-		if isHaiku55 {
+		if isHaiku55 || isFableOrMythos52 {
 			if req.Temperature != nil && *req.Temperature != 1 {
-				return nil, fmt.Errorf("claude-haiku-5-5 does not support non-default temperature")
+				return nil, fmt.Errorf("%s does not support non-default temperature", req.Model)
 			}
 			if req.TopP != nil && *req.TopP != 0.99 {
-				return nil, fmt.Errorf("claude-haiku-5-5 does not support non-default top_p")
+				return nil, fmt.Errorf("%s does not support non-default top_p", req.Model)
 			}
 			if req.Temperature != nil && req.TopP != nil {
-				return nil, fmt.Errorf("claude-haiku-5-5 does not allow temperature and top_p together; omit both")
+				return nil, fmt.Errorf("%s does not allow temperature and top_p together; omit both", req.Model)
 			}
 		}
 		if req.Reasoning != nil && req.Reasoning.Effort != "" {

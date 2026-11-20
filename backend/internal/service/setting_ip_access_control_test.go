@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// writableSettingRepoStub 在 settingRepoStub 之上支持 Set（写入 values map）。
-type writableSettingRepoStub struct {
+// ipAccessControlSettingRepoStub 在 settingRepoStub 之上支持 Set（写入 values map）。
+type ipAccessControlSettingRepoStub struct {
 	*settingRepoStub
 }
 
-func (s *writableSettingRepoStub) Set(ctx context.Context, key, value string) error {
+func (s *ipAccessControlSettingRepoStub) Set(ctx context.Context, key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.values == nil {
@@ -63,8 +63,8 @@ func TestIPAccessControlRuntimeRefreshStartsOneGoroutine(t *testing.T) {
 	require.LessOrEqual(t, started, 5, "expired cache started %d goroutines for 500 requests", started)
 }
 
-func newIPAccessSettingService(values map[string]string) (*SettingService, *writableSettingRepoStub) {
-	repo := &writableSettingRepoStub{settingRepoStub: &settingRepoStub{values: values}}
+func newIPAccessSettingService(values map[string]string) (*SettingService, *ipAccessControlSettingRepoStub) {
+	repo := &ipAccessControlSettingRepoStub{settingRepoStub: &settingRepoStub{values: values}}
 	return NewSettingService(repo, nil), repo
 }
 

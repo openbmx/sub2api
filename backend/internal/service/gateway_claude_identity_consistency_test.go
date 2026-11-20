@@ -100,20 +100,20 @@ func TestClaudeSoftwareUpgradePreservesDevicePlatform(t *testing.T) {
 }
 
 func TestClaudeFloorDoesNotHideObservedSoftwareUpgrade(t *testing.T) {
-	claude.SetCLIVersionResolver(func() string { return "2.1.300" })
+	claude.SetCLIVersionResolver(func() string { return "2.9.300" })
 	t.Cleanup(func() { claude.SetCLIVersionResolver(nil) })
 	svc := NewIdentityService(&stubIdentityCache{})
-	headers := http.Header{"User-Agent": {"claude-cli/2.1.200 (external, cli)"}, "X-Stainless-Package-Version": {"0.80.0"}}
+	headers := http.Header{"User-Agent": {"claude-cli/2.9.200 (external, cli)"}, "X-Stainless-Package-Version": {"0.80.0"}}
 	first, err := svc.GetOrCreateFingerprint(context.Background(), 942, headers)
 	require.NoError(t, err)
-	require.Contains(t, first.UserAgent, "2.1.300")
-	headers.Set("User-Agent", "claude-cli/2.1.220 (external, cli)")
+	require.Contains(t, first.UserAgent, "2.9.300")
+	headers.Set("User-Agent", "claude-cli/2.9.220 (external, cli)")
 	headers.Set("X-Stainless-Package-Version", "0.90.0")
 	second, err := svc.GetOrCreateFingerprint(context.Background(), 942, headers)
 	require.NoError(t, err)
-	require.Contains(t, second.UserAgent, "2.1.300")
+	require.Contains(t, second.UserAgent, "2.9.300")
 	require.Equal(t, "0.90.0", second.StainlessPackageVersion)
-	headers.Set("User-Agent", "claude-cli/2.1.210 (external, cli)")
+	headers.Set("User-Agent", "claude-cli/2.9.210 (external, cli)")
 	headers.Set("X-Stainless-Package-Version", "0.85.0")
 	third, err := svc.GetOrCreateFingerprint(context.Background(), 942, headers)
 	require.NoError(t, err)
@@ -121,16 +121,16 @@ func TestClaudeFloorDoesNotHideObservedSoftwareUpgrade(t *testing.T) {
 }
 
 func TestClaudeLoweredFloorDoesNotDowngradePersistedWireVersion(t *testing.T) {
-	floor := "2.1.300"
+	floor := "2.9.300"
 	claude.SetCLIVersionResolver(func() string { return floor })
 	t.Cleanup(func() { claude.SetCLIVersionResolver(nil) })
 	svc := NewIdentityService(&stubIdentityCache{})
-	_, err := svc.GetOrCreateFingerprint(context.Background(), 949, http.Header{"User-Agent": {"claude-cli/2.1.200 (external, cli)"}})
+	_, err := svc.GetOrCreateFingerprint(context.Background(), 949, http.Header{"User-Agent": {"claude-cli/2.9.200 (external, cli)"}})
 	require.NoError(t, err)
-	floor = "2.1.280"
-	out, err := svc.GetOrCreateFingerprint(context.Background(), 949, http.Header{"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-Stainless-Package-Version": {"0.112.1"}})
+	floor = "2.9.280"
+	out, err := svc.GetOrCreateFingerprint(context.Background(), 949, http.Header{"User-Agent": {"claude-cli/2.9.220 (external, cli)"}, "X-Stainless-Package-Version": {"0.112.1"}})
 	require.NoError(t, err)
-	require.Contains(t, out.UserAgent, "2.1.300")
+	require.Contains(t, out.UserAgent, "2.9.300")
 	require.Equal(t, "0.112.1", out.StainlessPackageVersion)
 }
 

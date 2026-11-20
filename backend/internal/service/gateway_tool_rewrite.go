@@ -43,8 +43,9 @@ const dynamicToolMapThreshold = 5
 //   - Forward: real → fake，请求阶段在 body 上应用。
 //   - Reverse: fake → real，响应阶段按完整工具名匹配。
 type ToolNameRewrite struct {
-	Forward map[string]string
-	Reverse map[string]string
+	Forward        map[string]string
+	Reverse        map[string]string
+	ReverseOrdered [][2]string
 }
 
 // buildDynamicToolMap 构造 tools 的动态假名映射。
@@ -131,16 +132,19 @@ func buildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 			mimicableNames = append(mimicableNames, name)
 		}
 	}
-	for _, tool := range tools.Array() {
+	tools.ForEach(func(_, tool gjson.Result) bool {
 		addTool(tool)
-	}
-	for _, message := range gjson.GetBytes(body, "messages").Array() {
-		for _, block := range message.Get("content").Array() {
+		return true
+	})
+	gjson.GetBytes(body, "messages").ForEach(func(_, message gjson.Result) bool {
+		message.Get("content").ForEach(func(_, block gjson.Result) bool {
 			if block.Get("type").String() == "tool_addition" && block.Get("tool.type").String() == "tool_definition" {
 				addTool(block.Get("tool.definition"))
 			}
-		}
-	}
+			return true
+		})
+		return true
+	})
 
 	dynamic := buildDynamicToolMap(mimicableNames)
 
@@ -159,6 +163,14 @@ func buildToolNameRewriteFromBody(body []byte) *ToolNameRewrite {
 	if len(rw.Forward) == 0 {
 		return nil
 	}
+
+	rw.ReverseOrdered = make([][2]string, 0, len(rw.Reverse))
+	for fake, real := range rw.Reverse {
+		rw.ReverseOrdered = append(rw.ReverseOrdered, [2]string{fake, real})
+	}
+	sort.SliceStable(rw.ReverseOrdered, func(i, j int) bool {
+		return len(rw.ReverseOrdered[i][0]) > len(rw.ReverseOrdered[j][0])
+	})
 
 	return rw
 }
@@ -238,22 +250,22 @@ func applyToolsLastCacheBreakpoint(body []byte) []byte {
 	if !tools.IsArray() {
 		return body
 	}
-	arr := tools.Array()
-	if len(arr) == 0 {
-		return body
-	}
+	idx := 0
 	lastIdx := -1
-	for idx, tool := range arr {
-		if isDeferredLoadingTool(tool) {
-			continue
+	lastTool := gjson.Result{}
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if !isDeferredLoadingTool(tool) {
+			lastIdx = idx
+			lastTool = tool
 		}
-		lastIdx = idx
-	}
+		idx++
+		return true
+	})
 	if lastIdx == -1 {
 		return body
 	}
 
-	existingCC := arr[lastIdx].Get("cache_control")
+	existingCC := lastTool.Get("cache_control")
 
 	if existingCC.Exists() && existingCC.Get("ttl").String() != "" {
 		return body
@@ -285,14 +297,16 @@ func stripDeferredToolCacheControl(body []byte) []byte {
 	if !tools.IsArray() {
 		return body
 	}
-	for idx, tool := range tools.Array() {
-		if !isDeferredLoadingTool(tool) || !tool.Get("cache_control").Exists() {
-			continue
+	idx := 0
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if isDeferredLoadingTool(tool) && tool.Get("cache_control").Exists() {
+			if next, err := sjson.DeleteBytes(body, fmt.Sprintf("tools.%d.cache_control", idx)); err == nil {
+				body = next
+			}
 		}
-		if next, err := sjson.DeleteBytes(body, fmt.Sprintf("tools.%d.cache_control", idx)); err == nil {
-			body = next
-		}
-	}
+		idx++
+		return true
+	})
 	return body
 }
 
@@ -429,4 +443,21 @@ func reverseToolNamesIfPresent(c interface {
 		return chunk
 	}
 	return restoreToolNamesInBytes(chunk, rw)
+}
+
+// reverseToolNamesIfPresentString is the string-typed variant for streaming
+// writers. The common case (no rewrite mapping or no tool-name fields in
+// the chunk) returns the original string without any []byte/string copy, while
+// preserving protocol-field-only restoration when tool names are present.
+func reverseToolNamesIfPresentString(c interface {
+	Get(string) (any, bool)
+}, chunk string) string {
+	rw := toolNameRewriteFromContext(c)
+	if rw == nil || len(rw.Reverse) == 0 {
+		return chunk
+	}
+	if !strings.Contains(chunk, "\"name\"") && !strings.Contains(chunk, "\"tool_name\"") {
+		return chunk
+	}
+	return string(restoreToolNamesInBytes([]byte(chunk), rw))
 }

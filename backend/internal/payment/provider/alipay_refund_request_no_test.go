@@ -16,14 +16,14 @@ import (
 // treats the retry as the same refund when out_request_no matches, so the number
 // must be a pure function of the order and amount.
 func TestAlipayRefundRequestNoIsDeterministic(t *testing.T) {
-	first := alipayRefundRequestNo("20260925AbCd1234", "12.50")
+	first := "20260925AbCd1234" + alipayRefundRequestSep + alipayRefundRequestNoSuffix("12.50")
 	if first != "20260925AbCd1234-refund-1250" {
 		t.Fatalf("unexpected out_request_no %q", first)
 	}
-	if again := alipayRefundRequestNo("20260925AbCd1234", "12.50"); again != first {
+	if again := "20260925AbCd1234" + alipayRefundRequestSep + alipayRefundRequestNoSuffix("12.50"); again != first {
 		t.Fatalf("retry produced %q, want %q", again, first)
 	}
-	if other := alipayRefundRequestNo("20260925AbCd1234", "5.00"); other == first {
+	if other := "20260925AbCd1234" + alipayRefundRequestSep + alipayRefundRequestNoSuffix("5.00"); other == first {
 		t.Fatal("a different refund amount must not reuse the request number")
 	}
 	if len(first) > 64 {
@@ -64,7 +64,8 @@ func TestAlipayRefundRetryReplaysRequestNoAndStaysQueryable(t *testing.T) {
 	if len(sent) != 2 || sent[0] != sent[1] {
 		t.Fatalf("the retry must replay the same out_request_no, sent %q", sent)
 	}
-	if sent[0] != alipayRefundRequestNo(req.OrderID, req.Amount) || resp.RefundID != sent[0] {
+	wantOutRequestNo := req.OrderID + alipayRefundRequestSep + alipayRefundRequestNoSuffix(req.Amount)
+	if sent[0] != wantOutRequestNo || resp.RefundID != sent[0] {
 		t.Fatalf("RefundID = %q, sent %q", resp.RefundID, sent)
 	}
 
